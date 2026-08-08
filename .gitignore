@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+.env
+.DS_Store
+.vscode/
+.idea/
+*.log
+docs
+general-experiment-report-template.md

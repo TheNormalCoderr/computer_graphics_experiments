@@ -244,11 +244,6 @@ def display():
         gl.glVertex2f(bx, by)
     gl.glEnd()
 
-    # ── Determine dominant axis for label placement ───────────────────────
-    dx_abs = abs(x2 - x1)
-    dy_abs = abs(y2 - y1)
-    dominant_y = dy_abs >= dx_abs
-
     # ── Circles for each pixel ────────────────────────────────────────────
     for i, (gx, gy) in enumerate(pts):
         cx, cy = to_canvas(gx, gy)
@@ -270,24 +265,63 @@ def display():
             gl.glVertex2f(cx + (r + 1.5) * math.cos(rad), cy + (r + 1.5) * math.sin(rad))
         gl.glEnd()
 
-        # Coordinate label
+    # ── Label placement with collision avoidance ──────────────────────────
+    LABEL_W = 48   # approximate width of "(xx,yy)" in pixels
+    LABEL_H = 12   # approximate height of a label
+    PAD     = 3    # padding between labels
+    placed = []    # list of (lx, ly, lx+w, ly+h) bounding boxes
+
+    # Register all point circles as occupied regions
+    for (gx, gy) in pts:
+        pcx, pcy = to_canvas(gx, gy)
+        placed.append((pcx - r - 2, pcy - r - 2, pcx + r + 2, pcy + r + 2))
+
+    def _overlaps(lx, ly):
+        """Check if a label at (lx, ly) overlaps any occupied region."""
+        ax1, ay1 = lx - PAD, ly - PAD
+        ax2, ay2 = lx + LABEL_W + PAD, ly + LABEL_H + PAD
+        for bx1, by1, bx2, by2 in placed:
+            if ax1 < bx2 and ax2 > bx1 and ay1 < by2 and ay2 > by1:
+                return True
+        return False
+
+    for i, (gx, gy) in enumerate(pts):
+        cx, cy = to_canvas(gx, gy)
         label = f"({gx},{gy})"
 
-        if dominant_y:
-            tx = cx + 8
-            ty = cy - 4
-            if tx + 46 > CANVAS_W - 4:
-                tx = cx - r - 48
-        else:
-            offset_y = -18 if (i % 2 == 0) else 10
-            tx = cx + 6
-            ty = cy + offset_y
-            if tx + 44 > CANVAS_W - 4:
-                tx = cx - r - 46
+        # Generate 12 candidate positions around the point
+        off = r + 4  # offset from point centre
+        candidates = [
+            (cx + off,               cy + 2),                  # right-centre
+            (cx + off,               cy - LABEL_H - 2),        # right-below
+            (cx + off,               cy + LABEL_H),            # right-above
+            (cx - LABEL_W - off,     cy + 2),                  # left-centre
+            (cx - LABEL_W - off,     cy - LABEL_H - 2),        # left-below
+            (cx - LABEL_W - off,     cy + LABEL_H),            # left-above
+            (cx - LABEL_W // 2,      cy + off + 2),            # top-centre
+            (cx - LABEL_W // 2,      cy - off - LABEL_H),      # bottom-centre
+            (cx + off,               cy + 2 * LABEL_H),        # right-far-above
+            (cx + off,               cy - 2 * LABEL_H),        # right-far-below
+            (cx - LABEL_W - off,     cy + 2 * LABEL_H),        # left-far-above
+            (cx - LABEL_W - off,     cy - 2 * LABEL_H),        # left-far-below
+        ]
 
-        ty = max(2, min(ty, CANVAS_H - 14))
+        # Clamp and pick the first non-overlapping candidate
+        tx, ty = candidates[0]
+        found = False
+        for cand_x, cand_y in candidates:
+            cand_x = max(2, min(cand_x, CANVAS_W - LABEL_W - 2))
+            cand_y = max(2, min(cand_y, CANVAS_H - LABEL_H - 2))
+            if not _overlaps(cand_x, cand_y):
+                tx, ty = cand_x, cand_y
+                found = True
+                break
+        if not found:
+            # All candidates overlap — use right-centre clamped
+            tx = max(2, min(candidates[0][0], CANVAS_W - LABEL_W - 2))
+            ty = max(2, min(candidates[0][1], CANVAS_H - LABEL_H - 2))
 
-        # Draw main text
+        placed.append((tx, ty, tx + LABEL_W, ty + LABEL_H))
         draw_text(tx, ty, label, LABEL_COLOR, glut.GLUT_BITMAP_HELVETICA_10)
 
     gl.glFlush()

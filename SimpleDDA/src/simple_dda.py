@@ -114,209 +114,34 @@ def dda_points(x1: float, y1: float, x2: float, y2: float):
     dy    = y2 - y1
     steps = int(max(abs(dx), abs(dy)))
     if steps == 0:
-        return [(int(round(x1)), int(round(y1)))]
+        return [(math.floor(x1 + 0.5), math.floor(y1 + 0.5))]
 
     x_inc = dx / steps
     y_inc = dy / steps
     x, y  = float(x1), float(y1)
     pts   = []
     for _ in range(steps + 1):
-        pts.append((int(round(x)), int(round(y))))
+        pts.append((math.floor(x + 0.5), math.floor(y + 0.5)))
         x += x_inc
         y += y_inc
     return pts
 
 
-# ───────────────────────────────────────────────────────────────────────────
-# OpenGL Rendering Helpers
-# ───────────────────────────────────────────────────────────────────────────
-def to_canvas(gx: int, gy: int):
-    # OpenGL origin is naturally bottom-left. We just scale by cell size.
-    cx = MARGIN + gx * CELL
-    cy = MARGIN + gy * CELL
-    return cx, cy
-
-def draw_text(x, y, text, color, font=glut.GLUT_BITMAP_HELVETICA_10):
-    gl.glColor3f(
-        color[0] / 255.0,
-        color[1] / 255.0,
-        color[2] / 255.0,
-    )
-
-    gl.glRasterPos2f(x, y)
-
-    for ch in text:
-        glut.glutBitmapCharacter(font, ord(ch))
-
-# Global dict to map window IDs to test case indices
-window_to_tc = {}
-
-def display():
-    win_id = glut.glutGetWindow()
-    idx = window_to_tc.get(win_id, 0)
-    tc = TEST_CASES[idx]
-
-    gl.glClearColor(BG_COLOR[0]/255.0, BG_COLOR[1]/255.0, BG_COLOR[2]/255.0, 1.0)
-    gl.glClear(gl.GL_COLOR_BUFFER_BIT)
-
-    color = POINT_COLORS[idx]
-    r = POINT_RADIUS
-
-    # ── Grid ─────────────────────────────────────────────────────────────
-    gl.glColor3f(GRID_COLOR[0]/255.0, GRID_COLOR[1]/255.0, GRID_COLOR[2]/255.0)
-    gl.glLineWidth(1)
-    gl.glBegin(gl.GL_LINES)
-    for col in range(GRID_COLS + 1):
-        cx, _ = to_canvas(col, 0)
-        gl.glVertex2f(cx, MARGIN)
-        gl.glVertex2f(cx, CANVAS_H - MARGIN)
-    for row in range(GRID_ROWS + 1):
-        _, cy = to_canvas(0, row)
-        gl.glVertex2f(MARGIN, cy)
-        gl.glVertex2f(CANVAS_W - MARGIN, cy)
-    gl.glEnd()
-
-    # ── Axes ──────────────────────────────────────────────────────────────
-    gl.glColor3f(AXIS_COLOR[0]/255.0, AXIS_COLOR[1]/255.0, AXIS_COLOR[2]/255.0)
-    gl.glLineWidth(2)
-    gl.glBegin(gl.GL_LINES)
-    ox, oy = to_canvas(0, 0)
-    gl.glVertex2f(ox, MARGIN)
-    gl.glVertex2f(ox, CANVAS_H - MARGIN)
-    gl.glVertex2f(MARGIN, oy)
-    gl.glVertex2f(CANVAS_W - MARGIN, oy)
-    gl.glEnd()
-
-    # ── Axis tick labels ──────────────────────────────────────────────────
-    for col in range(0, GRID_COLS + 1, 2):
-        cx, cy = to_canvas(col, 0)
-        draw_text(cx - 4, cy - 14, str(col), AXIS_LBL, glut.GLUT_BITMAP_HELVETICA_10)
-    for row in range(0, GRID_ROWS + 1, 2):
-        cx, cy = to_canvas(0, row)
-        draw_text(cx - 24, cy - 4, str(row), AXIS_LBL, glut.GLUT_BITMAP_HELVETICA_10)
-
-    # ── Compute DDA points ────────────────────────────────────────────────
-    x1, y1, x2, y2 = tc["x1"], tc["y1"], tc["x2"], tc["y2"]
-    pts = dda_points(x1, y1, x2, y2)
-
-    # ── Direct line segments between consecutive DDA pixels ───────────────
-    gl.glColor3f(STAIR_COLOR[0]/255.0, STAIR_COLOR[1]/255.0, STAIR_COLOR[2]/255.0)
-    gl.glLineWidth(1)
-    gl.glBegin(gl.GL_LINES)
-    for i in range(len(pts) - 1):
-        ax, ay = to_canvas(*pts[i])
-        bx, by = to_canvas(*pts[i + 1])
-        gl.glVertex2f(ax, ay)
-        gl.glVertex2f(bx, by)
-    gl.glEnd()
-
-    # ── Determine dominant axis for label placement ───────────────────────
-    dx_abs = abs(x2 - x1)
-    dy_abs = abs(y2 - y1)
-    dominant_y = dy_abs >= dx_abs
-
-    # ── Circles for each DDA pixel ────────────────────────────────────────
-    for i, (gx, gy) in enumerate(pts):
-        cx, cy = to_canvas(gx, gy)
-
-        # Filled circle
-        gl.glColor3f(color[0]/255.0, color[1]/255.0, color[2]/255.0)
-        gl.glBegin(gl.GL_POLYGON)
-        for angle in range(0, 360, 8):
-            rad = math.radians(angle)
-            gl.glVertex2f(cx + r * math.cos(rad), cy + r * math.sin(rad))
-        gl.glEnd()
-
-        # Thin dark outline
-        gl.glColor3f(0.0, 0.0, 0.0)
-        gl.glLineWidth(1)
-        gl.glBegin(gl.GL_LINE_LOOP)
-        for angle in range(0, 360, 15):
-            rad = math.radians(angle)
-            gl.glVertex2f(cx + (r + 1.5) * math.cos(rad), cy + (r + 1.5) * math.sin(rad))
-        gl.glEnd()
-
-        # Coordinate label
-        label = f"({gx},{gy})"
-
-        if dominant_y:
-            tx = cx + 8
-            ty = cy - 4
-            if tx + 46 > CANVAS_W - 4:
-                tx = cx - r - 48
-        else:
-            offset_y = -18 if (i % 2 == 0) else 10
-            tx = cx + 6
-            ty = cy + offset_y
-            if tx + 44 > CANVAS_W - 4:
-                tx = cx - r - 46
-
-        ty = max(2, min(ty, CANVAS_H - 14))
-
-        # Draw main text
-        draw_text(tx, ty, label, LABEL_COLOR, glut.GLUT_BITMAP_HELVETICA_10)
-
-    gl.glFlush()
-
-    # ── Save the rendered frame as PNG (once per window) ──────────────────
-    if win_id not in saved_windows:
-        saved_windows.add(win_id)
-        out_path = os.path.join(OUTPUT_DIR, tc["file"])
-        save_framebuffer(out_path, CANVAS_W, CANVAS_H)
-
-
-def reshape(w, h):
-    gl.glViewport(0, 0, w, h)
-    gl.glMatrixMode(gl.GL_PROJECTION)
-    gl.glLoadIdentity()
-    glu.gluOrtho2D(0, CANVAS_W, 0, CANVAS_H)
-    gl.glMatrixMode(gl.GL_MODELVIEW)
-    gl.glLoadIdentity()
-
-
-def keyboard(key, x, y):
-    if key in (b'\x1b', b'q', b'Q'):  # Escape or q/Q
-        os._exit(0)
-
-
-# ───────────────────────────────────────────────────────────────────────────
-# Entry point
-# ───────────────────────────────────────────────────────────────────────────
-def main() -> None:
-    print("=== Simple DDA Line Drawing Algorithm (OpenGL) ===")
-
-    glut.glutInit(sys.argv)
-    glut.glutInitDisplayMode(glut.GLUT_SINGLE | glut.GLUT_RGB)
-
-    # Calculate info for console and create 3 windows
-    for idx, tc in enumerate(TEST_CASES):
-        x1, y1, x2, y2 = tc["x1"], tc["y1"], tc["x2"], tc["y2"]
-        dx    = x2 - x1
-        dy    = y2 - y1
-        steps = int(max(abs(dx), abs(dy)))
-        x_inc = round(dx / steps, 4) if steps else 0
-        y_inc = round(dy / steps, 4) if steps else 0
-        pts   = dda_points(x1, y1, x2, y2)
-        print(f"[DDA] {tc['label']}  ({x1},{y1})→({x2},{y2})  "
-              f"dx={dx} dy={dy} steps={steps} x_inc={x_inc} y_inc={y_inc}  "
-              f"pixels={len(pts)}")
-
-        glut.glutInitWindowSize(CANVAS_W, CANVAS_H)
-        glut.glutInitWindowPosition(100 + idx * 40, 100 + idx * 40)
-
-        win_title = f"DDA - {tc['label']}".encode("utf-8")
-        win_id = glut.glutCreateWindow(win_title)
-
-        window_to_tc[win_id] = idx
-
-        glut.glutDisplayFunc(display)
-        glut.glutReshapeFunc(reshape)
-        glut.glutKeyboardFunc(keyboard)
-
-    print(f"[Info] Images will be saved to: {OUTPUT_DIR}")
-    print("Running OpenGL main loop. Press ESC or 'q' in any window to exit.")
-    glut.glutMainLoop()
-
-
 if __name__ == "__main__":
-    main()
+    import os
+    import sys
+    
+    # Add repo root to sys.path to allow importing the app module
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    if repo_root not in sys.path:
+        sys.path.append(repo_root)
+        
+    from app.src import line_drawing_app as lda
+    
+    # Set default algorithm
+    lda.CURRENT_ALGORITHM = "Simple DDA"
+    
+    print(f"[Info] Opening application window (clean canvas) for Simple DDA.")
+    
+    # Launch the app
+    lda.run()

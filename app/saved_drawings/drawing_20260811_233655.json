@@ -1,0 +1,170 @@
+[
+  {
+    "p1": [
+      -25,
+      -10
+    ],
+    "p2": [
+      -22,
+      12
+    ],
+    "algorithm": "Symmetric DDA",
+    "color": "Red",
+    "width": 3,
+    "style": "Solid"
+  },
+  {
+    "p1": [
+      -18,
+      -7
+    ],
+    "p2": [
+      -21,
+      12
+    ],
+    "algorithm": "Symmetric DDA",
+    "color": "Red",
+    "width": 3,
+    "style": "Solid"
+  },
+  {
+    "p1": [
+      -23,
+      0
+    ],
+    "p2": [
+      -18,
+      2
+    ],
+    "algorithm": "Symmetric DDA",
+    "color": "Red",
+    "width": 3,
+    "style": "Solid"
+  },
+  {
+    "p1": [
+      -13,
+      -4
+    ],
+    "p2": [
+      -12,
+      6
+    ],
+    "algorithm": "Symmetric DDA",
+    "color": "Red",
+    "width": 3,
+    "style": "Solid"
+  },
+  {
+    "p1": [
+      -11,
+      6
+    ],
+    "p2": [
+      -9,
+      3
+    ],
+    "algorithm": "Symmetric DDA",
+    "color": "Red",
+    "width": 3,
+    "style": "Solid"
+  },
+  {
+    "p1": [
+      -8,
+      3
+    ],
+    "p2": [
+      -5,
+      6
+    ],
+    "algorithm": "Symmetric DDA",
+    "color": "Red",
+    "width": 3,
+    "style": "Solid"
+  },
+  {
+    "p1": [
+      -4,
+      6
+    ],
+    "p2": [
+      -6,
+      -4
+    ],
+    "algorithm": "Symmetric DDA",
+    "color": "Red",
+    "width": 3,
+    "style": "Solid"
+  },
+  {
+    "p1": [
+      1,
+      6
+    ],
+    "p2": [
+      8,
+      6
+    ],
+    "algorithm": "Symmetric DDA",
+    "color": "Red",
+    "width": 3,
+    "style": "Solid"
+  },
+  {
+    "p1": [
+      5,
+      6
+    ],
+    "p2": [
+      5,
+      -3
+    ],
+    "algorithm": "Symmetric DDA",
+    "color": "Red",
+    "width": 3,
+    "style": "Solid"
+  },
+  {
+    "p1": [
+      2,
+      -2
+    ],
+    "p2": [
+      7,
+      -2
+    ],
+    "algorithm": "Symmetric DDA",
+    "color": "Red",
+    "width": 3,
+    "style": "Solid"
+  },
+  {
+    "p1": [
+      12,
+      7
+    ],
+    "p2": [
+      23,
+      11
+    ],
+    "algorithm": "Symmetric DDA",
+    "color": "Red",
+    "width": 3,
+    "style": "Solid"
+  },
+  {
+    "p1": [
+      17,
+      9
+    ],
+    "p2": [
+      17,
+      -6
+    ],
+    "algorithm": "Symmetric DDA",
+    "color": "Red",
+    "width": 3,
+    "style": "Solid"
+  }
+]

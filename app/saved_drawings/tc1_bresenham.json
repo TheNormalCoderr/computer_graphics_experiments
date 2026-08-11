@@ -1,0 +1,16 @@
+[
+  {
+    "p1": [
+      2,
+      2
+    ],
+    "p2": [
+      18,
+      10
+    ],
+    "algorithm": "Bresenham",
+    "color": "Red",
+    "width": 1,
+    "style": "Solid"
+  }
+]

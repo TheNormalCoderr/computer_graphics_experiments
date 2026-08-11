@@ -9,7 +9,7 @@ import OpenGL.GLU as glu   #type:ignore
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT  = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
-OUTPUT_DIR = os.path.join(REPO_ROOT, "SymmetricDDA", "outputs")
+OUTPUT_DIR = os.path.join(REPO_ROOT, "Brestenham", "outputs")
 
 # ── Canvas & grid ─────────────────────────────────────────────────────────────
 CANVAS_W, CANVAS_H = 760, 620
@@ -25,17 +25,12 @@ AXIS_COLOR    = (40, 40, 40)      # Dark gray
 AXIS_LBL      = (90, 90, 90)      # Gray text
 STAIR_COLOR   = (0, 0, 0)         # Black connector
 
-def _generate_colors(n):
-    """Generate n visually distinct colors using HSL with fixed S=0.75, L=0.45."""
-    import colorsys
-    colors = []
-    for i in range(n):
-        hue = i / max(n, 1)
-        r, g, b = colorsys.hls_to_rgb(hue, 0.45, 0.75)
-        colors.append((int(r * 255), int(g * 255), int(b * 255)))
-    return colors
+POINT_COLORS = [
+    (214,39,40),      # Red
+    (44,160,44),      # Green
+    (31,119,180),     # Blue
+]
 
-POINT_COLORS = [(0, 0, 0)]
 LABEL_COLOR   = (20, 20, 20)
 POINT_RADIUS  = 5
 
@@ -45,8 +40,8 @@ TEST_CASES = [
      "label": "Test Case 1 — Positive Slope", "file": "tc1_positive_slope.png"},
     {"x1":  2, "y1": 14, "x2": 18, "y2":  5,
      "label": "Test Case 2 — Negative Slope", "file": "tc2_negative_slope.png"},
-    {"x1": 2, "y1":  8, "x2": 18, "y2": 8,
-     "label": "Test Case 3 — Horizontal Line",  "file": "tc3_horizontal_line.png"}
+    {"x1":  4, "y1":  2, "x2":  8, "y2": 14,
+     "label": "Test Case 3 — Steep Line",     "file": "tc3_steep_line.png"},
 ]
 
 # Track which windows have already been saved
@@ -67,7 +62,7 @@ def _write_png(filepath, width, height, rgb_rows):
         return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
 
     sig = b'\x89PNG\r\n\x1a\n'
-    ihdr_data = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    ihdr_data = struct.pack(">IIBBBB B", width, height, 8, 2, 0, 0, 0)
     ihdr = _chunk(b'IHDR', ihdr_data)
 
     raw = b''
@@ -103,70 +98,57 @@ def save_framebuffer(filepath, width, height):
 
 
 # ───────────────────────────────────────────────────────────────────────────
-# Core Symmetric DDA — returns list of (int, int) rasterised grid positions
+# Core Bresenham — returns list of (int, int) rasterised grid positions
 # ───────────────────────────────────────────────────────────────────────────
-def next_power_of_two(n):
+def bresenham_points(x1: int, y1: int, x2: int, y2: int):
     """
-    Return the power of 2 strictly greater than or equal to the textbook condition.
-    2^n-1 <= max(|dx|,|dy|) <= 2^n
+    Bresenham Line Drawing Algorithm — integer-only arithmetic.
+
+    Handles all octants:
+    - Positive and negative slopes
+    - Horizontal and vertical lines
+    - Steep lines (|dy| > |dx|) and shallow lines (|dx| >= |dy|)
+    - Lines drawn in either direction
+
+    Returns a list of (int, int) pixel positions.
     """
-    if n <= 0:
-        return 1
-    p = 1
-    while p <= n:
-        p <<= 1          # p = p * 2  (bit-shift left)
-    return p
+    pts = []
 
+    dx = abs(x2 - x1)
+    dy = abs(y2 - y1)
 
-def symmetric_dda_points(x1: float, y1: float, x2: float, y2: float):
-    """
-    Symmetric DDA — manual implementation.
+    # Determine step direction for each axis
+    sx = 1 if x2 > x1 else -1
+    sy = 1 if y2 > y1 else -1
 
-    1. dx = x2 - x1,   dy = y2 - y1
-    2. steps = 2^n  where  2^n >= max(|dx|, |dy|)   (smallest such power of 2)
-    3. x_inc = dx / steps,  y_inc = dy / steps
-       (division by a power of 2 is a single arithmetic right-shift)
-    4. Plot int(x + 0.5) int(y + 0.5) for i = 0 … steps.
+    # Decide whether to step along x or y as the dominant axis
+    if dx >= dy:
+        # Shallow line — step along x
+        # Decision parameter: p = 2*dy - dx
+        p = 2 * dy - dx
+        x, y = x1, y1
 
-    Because steps >= max(|dx|, |dy|), both |x_inc| and |y_inc| are <= 1,
-    so no pixel is ever skipped.  However, some pixels may be plotted more
-    than once (duplicates), since 2^n can exceed max(|dx|, |dy|).
-    """
-    dx    = x2 - x1
-    dy    = y2 - y1
-    steps = next_power_of_two(int(max(abs(dx), abs(dy))))
-    if steps == 0:
-        return [(int(round(x1)), int(round(y1)))]
+        for _ in range(dx + 1):
+            pts.append((x, y))
+            if p >= 0:
+                y += sy
+                p -= 2 * dx
+            p += 2 * dy
+            x += sx
+    else:
+        # Steep line — step along y
+        # Decision parameter: p = 2*dx - dy
+        p = 2 * dx - dy
+        x, y = x1, y1
 
-    x_inc = dx / steps
-    y_inc = dy / steps
-    x, y  = float(x1), float(y1)
-    pts   = []
-    for _ in range(steps + 1):
-        # Round to nearest integer
-        pt = (int(x + 0.5), int(y + 0.5))
-        # Symmetric DDA may generate duplicate points — include them
-        pts.append(pt)
-        x += x_inc
-        y += y_inc
+        for _ in range(dy + 1):
+            pts.append((x, y))
+            if p >= 0:
+                x += sx
+                p -= 2 * dy
+            p += 2 * dx
+            y += sy
     return pts
-
-
-def unique_points(pts):
-    """
-    Symmetric DDA generates many sub-pixel points.
-    We round them to integers and remove adjacent duplicates.
-    """
-    unique = []
-    seen = set()
-    for (x, y) in pts:
-        gx = int(math.floor(x + 0.5))
-        gy = int(math.floor(y + 0.5))
-        if (gx, gy) not in seen:
-            seen.add((gx, gy))
-            unique.append((gx, gy))
-    return unique
-
 
 if __name__ == "__main__":
     import os
@@ -179,10 +161,10 @@ if __name__ == "__main__":
         
     from app.src import line_drawing_app as lda
     
-    # Set default algorithm
-    lda.CURRENT_ALGORITHM = "Symmetric DDA"
+    # Set default algorithm to Bresenham
+    lda.CURRENT_ALGORITHM = "Bresenham"
     
-    print(f"[Info] Opening application window (clean canvas) for Symmetric DDA.")
+    print(f"[Info] Opening application window (clean canvas) for Bresenham.")
     
     # Launch the app
     lda.run()

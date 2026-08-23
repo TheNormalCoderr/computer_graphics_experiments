@@ -118,6 +118,17 @@ def next_power_of_two(n):
     return p
 
 
+def sym_round(n):
+    """
+    Symmetric rounding: half-way values always round away from zero.
+    This prevents asymmetry (bumps) in negative coordinates.
+    """
+    if n > 0:
+        return math.floor(n + 0.5)
+    elif n < 0:
+        return math.ceil(n - 0.5)
+    return 0
+
 def symmetric_dda_points(x1: float, y1: float, x2: float, y2: float):
     """
     Symmetric DDA — manual implementation.
@@ -126,7 +137,7 @@ def symmetric_dda_points(x1: float, y1: float, x2: float, y2: float):
     2. steps = 2^n  where  2^n >= max(|dx|, |dy|)   (smallest such power of 2)
     3. x_inc = dx / steps,  y_inc = dy / steps
        (division by a power of 2 is a single arithmetic right-shift)
-    4. Plot int(x + 0.5) int(y + 0.5) for i = 0 … steps.
+    4. Plot sym_round(x) sym_round(y) for i = 0 … steps.
 
     Because steps >= max(|dx|, |dy|), both |x_inc| and |y_inc| are <= 1,
     so no pixel is ever skipped.  However, some pixels may be plotted more
@@ -136,15 +147,15 @@ def symmetric_dda_points(x1: float, y1: float, x2: float, y2: float):
     dy    = y2 - y1
     steps = next_power_of_two(int(max(abs(dx), abs(dy))))
     if steps == 0:
-        return [(int(round(x1)), int(round(y1)))]
+        return [(sym_round(x1), sym_round(y1))]
 
     x_inc = dx / steps
     y_inc = dy / steps
     x, y  = float(x1), float(y1)
     pts   = []
     for _ in range(steps + 1):
-        # Round to nearest integer
-        pt = (int(x + 0.5), int(y + 0.5))
+        # Round to nearest integer properly for both positive and negative
+        pt = (sym_round(x), sym_round(y))
         # Symmetric DDA may generate duplicate points — include them
         pts.append(pt)
         x += x_inc
@@ -160,8 +171,8 @@ def unique_points(pts):
     unique = []
     seen = set()
     for (x, y) in pts:
-        gx = int(math.floor(x + 0.5))
-        gy = int(math.floor(y + 0.5))
+        gx = int(sym_round(x))
+        gy = int(sym_round(y))
         if (gx, gy) not in seen:
             seen.add((gx, gy))
             unique.append((gx, gy))

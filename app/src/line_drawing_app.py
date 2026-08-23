@@ -20,6 +20,8 @@ if REPO_ROOT not in sys.path:
 from SimpleDDA.src.simple_dda import dda_points                                      #type:ignore
 from SymmetricDDA.src.symmetric_dda import symmetric_dda_points, unique_points        #type:ignore
 from Brestenham.src.bresenham import bresenham_points                                 #type:ignore
+from MidPointCircle.src.midpoint_circle import midpoint_circle_points                 #type:ignore
+from MidPointEllipse.src.midpoint_ellipse import midpoint_ellipse_points               #type:ignore
 
 
 # ============================================================================
@@ -37,7 +39,8 @@ CURRENT_HEIGHT = DEFAULT_HEIGHT
 # Menu Configuration
 # ============================================================================
 
-MENU_HEIGHT = 40
+MENU_HEIGHT = 60
+MENU_BUTTON_HEIGHT = 40
 MENU_BG_COLOR = (0.22, 0.22, 0.25)
 MENU_ITEM_COLOR = (0.35, 0.35, 0.38)
 MENU_TEXT_COLOR = (0.92, 0.92, 0.92)
@@ -61,6 +64,8 @@ ALGORITHM_ITEMS = [
     "Simple DDA",
     "Symmetric DDA",
     "Bresenham",
+    "Mid Point Circle",
+    "Mid Point Ellipse",
 ]
 
 LINE_PARAMETERS_ITEMS = [
@@ -69,6 +74,7 @@ LINE_PARAMETERS_ITEMS = [
     "Solid Line",
     "Dotted Line",
     "Dashed Line",
+    "User Defined",
 ]
 
 COLOR_ITEMS = [
@@ -116,6 +122,12 @@ SAVE_DIALOG_TEXT = ""           # Current text in the input field
 SAVE_DIALOG_DEFAULT = ""       # Default filename shown as placeholder
 SAVE_DIALOG_CURSOR_BLINK = 0   # Frame counter for cursor blinking
 
+# ── Pattern Dialog State ─────────────────────────────────────────────────────
+PATTERN_DIALOG_OPEN = False
+PATTERN_DIALOG_TEXT = ""        # Current text in the pattern input field
+PATTERN_DIALOG_CURSOR_BLINK = 0 # Frame counter for cursor blinking
+CURRENT_USER_PATTERN = "11110000"  # Default user-defined pattern (1=draw, 0=gap)
+
 
 # ============================================================================
 # Drawing State
@@ -135,22 +147,72 @@ COLOR_MAP = {
 CURRENT_ALGORITHM = "Bresenham"
 CURRENT_COLOR = "Red"
 CURRENT_LINE_WIDTH = 1
-CURRENT_LINE_STYLE = "Solid"   # "Solid", "Dotted", "Dashed"
+CURRENT_LINE_STYLE = "Solid"   # "Solid", "Dotted", "Dashed", "UserDefined"
 
 # Point selection state
-selected_points = []    # list of (x_world, y_world) — max 2
+selected_points = []    # list of (x_world, y_world)
+current_mouse_grid = None # (gx, gy) of current mouse position
 
-# All drawn lines (persisted until Clear)
-# Each entry: {
+# All drawn shapes (lines, circles, and ellipses, persisted until Clear)
+# Line entry: {
+#   "type": "line",
 #   "p1": (x, y),
 #   "p2": (x, y),
 #   "algorithm": str,
 #   "color": str,
 #   "width": int,
 #   "style": str,
+#   "pattern": str,       # user-defined pattern (only for "UserDefined" style)
 #   "line_points": [(x, y), ...],
 # }
+# Circle entry: {
+#   "type": "circle",
+#   "center": (x, y),
+#   "radius_point": (x, y),
+#   "radius": int,
+#   "algorithm": str,
+#   "color": str,
+#   "width": int,
+#   "circle_points": [(x, y), ...],
+# }
+# Ellipse entry: {
+#   "type": "ellipse",
+#   "center": (x, y),
+#   "rx_point": (x, y),
+#   "ry_point": (x, y),
+#   "rx": int,
+#   "ry": int,
+#   "algorithm": str,
+#   "color": str,
+#   "width": int,
+#   "style": str,
+#   "ellipse_points": [(x, y), ...],
+# }
 drawn_lines = []
+
+# Animation state for circles and ellipses
+circle_animation = {
+    "active": False,
+    "phase": "radius",      # "radius" -> "points" -> "finished"
+    "progress": 0.0,        # 0.0 to 1.0 for radius, 0 to len(pts) for points
+    "entry": None           # The dictionary that will eventually go into drawn_lines
+}
+
+ellipse_animation = {
+    "active": False,
+    "phase": "rx",          # "rx" -> "ry" -> "points" -> "finished"
+    "progress": 0.0,
+    "entry": None
+}
+
+# --- Animation Speed Settings ---
+# Time (in milliseconds) between animation frames. Default 16ms (~60 FPS)
+ANIMATION_FRAME_MS = 16
+# How much the radius line grows per frame (0.0 to 1.0). Default 0.05 (takes 20 frames). Higher = faster.
+ANIMATION_RADIUS_SPEED = 0.03 
+# How many frames it should take to draw the entire circle of points. Default 30. Lower = faster.
+ANIMATION_POINTS_FRAMES = 50.0
+# --------------------------------
 
 # Import file list (populated when Import File dropdown is opened)
 import_file_list = []
@@ -166,7 +228,7 @@ OUTPUT_DIR = os.path.join(APP_DIR, "output")
 
 CANVAS_BG_COLOR = (0.96, 0.96, 0.97, 1.0)
 
-GRID_SIZE = 20
+GRID_SIZE = 2
 GRID_LINE_COLOR = (0.82, 0.82, 0.84)
 GRID_LINE_THICKNESS = 1
 
@@ -236,9 +298,19 @@ def round_half_up(n):
     """
     return math.floor(n + 0.5)
 
+def is_circle_algorithm(algorithm):
+    """Return True if the algorithm is a circle-drawing algorithm."""
+    return algorithm == "Mid Point Circle"
+
+
+def is_ellipse_algorithm(algorithm):
+    """Return True if the algorithm is an ellipse-drawing algorithm."""
+    return algorithm == "Mid Point Ellipse"
+
+
 def compute_line_points(algorithm, x1, y1, x2, y2):
     """
-    Call the selected algorithm and return a list of (int, int) pixel positions.
+    Call the selected line algorithm and return a list of (int, int) pixel positions.
     """
     if algorithm == "Simple DDA":
         return dda_points(x1, y1, x2, y2)
@@ -251,6 +323,51 @@ def compute_line_points(algorithm, x1, y1, x2, y2):
         # Fallback to Bresenham
         return bresenham_points(x1, y1, x2, y2)
 
+
+def compute_circle_points(xc, yc, r):
+    """
+    Call the Mid Point Circle algorithm and return a list of (int, int) pixel positions.
+    """
+    if r <= 0:
+        return [(xc, yc)]
+    return midpoint_circle_points(xc, yc, r)
+
+
+def compute_ellipse_points(xc, yc, rx, ry, angle=0.0):
+    """
+    Call the Mid Point Ellipse algorithm and return a list of (int, int) pixel positions.
+    Applies rotation based on the given angle.
+    """
+    if rx <= 0 and ry <= 0:
+        return [(xc, yc)]
+    
+    # Generate points around origin
+    pts = midpoint_ellipse_points(0, 0, max(1, rx), max(1, ry))
+    
+    if angle == 0.0:
+        return [(x + xc, y + yc) for (x, y) in pts]
+        
+    rotated_pts = []
+    cos_t = math.cos(angle)
+    sin_t = math.sin(angle)
+    for (x, y) in pts:
+        rot_x = x * cos_t - y * sin_t
+        rot_y = x * sin_t + y * cos_t
+        gx = int(round_half_up(xc + rot_x))
+        gy = int(round_half_up(yc + rot_y))
+        rotated_pts.append((gx, gy))
+    
+    # Remove duplicates from rounding
+    unique = []
+    seen = set()
+    for pt in rotated_pts:
+        if pt not in seen:
+            seen.add(pt)
+            unique.append(pt)
+            
+    return unique
+
+
 def add_line(x1, y1, x2, y2, algorithm="Bresenham", color="Red", width=1, style="Solid"):
     """
     Utility function to programmatically add a line to the canvas.
@@ -258,6 +375,7 @@ def add_line(x1, y1, x2, y2, algorithm="Bresenham", color="Red", width=1, style=
     global drawn_lines
     pts = compute_line_points(algorithm, x1, y1, x2, y2)
     drawn_lines.append({
+        "type": "line",
         "p1": (x1, y1),
         "p2": (x2, y2),
         "algorithm": algorithm,
@@ -277,6 +395,30 @@ def keyboard(key, x, y):
     Handle keyboard input.
     """
     global SAVE_DIALOG_OPEN, SAVE_DIALOG_TEXT
+    global PATTERN_DIALOG_OPEN, PATTERN_DIALOG_TEXT
+
+    # ── If pattern dialog is open, route all keys to it ──────────────────
+    if PATTERN_DIALOG_OPEN:
+        if key == b'\x1b':          # Escape → cancel
+            PATTERN_DIALOG_OPEN = False
+            PATTERN_DIALOG_TEXT = ""
+            print("[Pattern] Cancelled.")
+            glut.glutPostRedisplay()
+            return
+        elif key == b'\r' or key == b'\n':   # Enter → confirm pattern
+            _confirm_pattern()
+            return
+        elif key == b'\x08' or key == b'\x7f':  # Backspace / Delete
+            PATTERN_DIALOG_TEXT = PATTERN_DIALOG_TEXT[:-1]
+            glut.glutPostRedisplay()
+            return
+        else:
+            ch = key.decode('ascii', errors='ignore')
+            # Only allow '0' and '1' characters for the binary pattern
+            if ch in ('0', '1'):
+                PATTERN_DIALOG_TEXT += ch
+                glut.glutPostRedisplay()
+            return
 
     # ── If save dialog is open, route all keys to it ─────────────────────
     if SAVE_DIALOG_OPEN:
@@ -411,7 +553,7 @@ def handle_dropdown_click(x, y):
     menu_left, menu_right = get_menu_item_bounds_px(menu_index)
     dd_left = menu_left
     dd_right = dd_left + DROPDOWN_WIDTH
-    dd_top = MENU_HEIGHT
+    dd_top = MENU_BUTTON_HEIGHT
     dd_bottom = dd_top + len(dropdown_items) * DROPDOWN_ITEM_HEIGHT
 
     # ── IMPORTANT: Check sub-dropdown FIRST ─────────────────────────────
@@ -488,6 +630,10 @@ def handle_dropdown_click(x, y):
                 elif clicked_item == "Dashed Line":
                     CURRENT_LINE_STYLE = "Dashed"
                     print(f"[Style] Selected: Dashed")
+                    OPEN_MENU = None
+                    OPEN_SUB_MENU = None
+                elif clicked_item == "User Defined":
+                    _open_pattern_dialog()
                     OPEN_MENU = None
                     OPEN_SUB_MENU = None
 
@@ -567,36 +713,180 @@ def handle_canvas_click(x, y):
 
     selected_points.append((gx, gy))
 
-    if len(selected_points) == 2:
-        p1 = selected_points[0]
-        p2 = selected_points[1]
+    if is_ellipse_algorithm(CURRENT_ALGORITHM):
+        # Ellipse mode: 3 clicks — centre, rx point, ry point
+        if len(selected_points) == 1:
+            print(f"[Ellipse] Centre selected: ({gx}, {gy}). Click a point to define horizontal radius (rx).")
+        elif len(selected_points) == 2:
+            print(f"[Ellipse] rx point selected: ({gx}, {gy}). Click a point to define vertical radius (ry).")
+        elif len(selected_points) == 3:
+            centre = selected_points[0]
+            
+            dx1 = selected_points[1][0] - centre[0]
+            dy1 = selected_points[1][1] - centre[1]
+            dist1 = math.sqrt(dx1 * dx1 + dy1 * dy1)
+            
+            dx2 = selected_points[2][0] - centre[0]
+            dy2 = selected_points[2][1] - centre[1]
+            dist2 = math.sqrt(dx2 * dx2 + dy2 * dy2)
+            
+            # Determine which clicked point defines the major axis dynamically
+            if dist1 >= dist2:
+                rx_pt = selected_points[1]
+                ry_pt = selected_points[2]
+                rx = int(round_half_up(dist1))
+                ry = int(round_half_up(dist2))
+            else:
+                rx_pt = selected_points[2]
+                ry_pt = selected_points[1]
+                rx = int(round_half_up(dist2))
+                ry = int(round_half_up(dist1))
 
-        # Compute line points using selected algorithm
-        line_pts = compute_line_points(
-            CURRENT_ALGORITHM,
-            p1[0], p1[1],
-            p2[0], p2[1],
-        )
+            # Ensure at least 1 for each
+            rx = max(1, rx)
+            ry = max(1, ry)
 
-        # Store the drawn line
-        drawn_lines.append({
-            "p1": p1,
-            "p2": p2,
-            "algorithm": CURRENT_ALGORITHM,
-            "color": CURRENT_COLOR,
-            "width": CURRENT_LINE_WIDTH,
-            "style": CURRENT_LINE_STYLE,
-            "line_points": line_pts,
-        })
+            # Compute angle of major axis
+            angle = math.atan2(rx_pt[1] - centre[1], rx_pt[0] - centre[0])
 
-        print(f"[Line] {CURRENT_ALGORITHM}: ({p1[0]},{p1[1]}) → ({p2[0]},{p2[1]}), "
-              f"{len(line_pts)} pixels, color={CURRENT_COLOR}, width={CURRENT_LINE_WIDTH}, style={CURRENT_LINE_STYLE}")
-        print(f"[Points] {line_pts}")
+            # Compute ellipse points with rotation
+            ellipse_pts = compute_ellipse_points(centre[0], centre[1], rx, ry, angle)
 
-        # Reset selection
-        selected_points = []
+            ellipse_entry = {
+                "type": "ellipse",
+                "center": centre,
+                "rx_point": rx_pt,
+                "ry_point": ry_pt,
+                "rx": rx,
+                "ry": ry,
+                "algorithm": CURRENT_ALGORITHM,
+                "color": CURRENT_COLOR,
+                "width": CURRENT_LINE_WIDTH,
+                "style": CURRENT_LINE_STYLE,
+                "ellipse_points": ellipse_pts,
+            }
+            if CURRENT_LINE_STYLE == "UserDefined":
+                ellipse_entry["pattern"] = CURRENT_USER_PATTERN
 
-    glut.glutPostRedisplay()
+            # Start animation
+            global ellipse_animation
+            ellipse_animation["active"] = True
+            ellipse_animation["phase"] = "rx"
+            ellipse_animation["progress"] = 0.0
+            ellipse_animation["entry"] = ellipse_entry
+
+            print(f"[Ellipse] {CURRENT_ALGORITHM}: centre=({centre[0]},{centre[1]}), "
+                  f"rx={rx}, ry={ry}, {len(ellipse_pts)} pixels, color={CURRENT_COLOR} - Animating...")
+
+            # Start the timer loop
+            glut.glutTimerFunc(ANIMATION_FRAME_MS, _ellipse_animation_tick, 0)
+
+            # Reset selection
+            selected_points = []
+
+    elif is_circle_algorithm(CURRENT_ALGORITHM):
+        # Circle mode: first click = centre, second click = radius point
+        if len(selected_points) == 1:
+            print(f"[Circle] Centre selected: ({gx}, {gy}). Click another point to define radius.")
+        elif len(selected_points) == 2:
+            centre = selected_points[0]
+            radius_pt = selected_points[1]
+
+            # Compute radius as integer distance
+            dx = radius_pt[0] - centre[0]
+            dy = radius_pt[1] - centre[1]
+            r = int(round_half_up(math.sqrt(dx * dx + dy * dy)))
+
+            # Compute circle points
+            circle_pts = compute_circle_points(centre[0], centre[1], r)
+
+            circle_entry = {
+                "type": "circle",
+                "center": centre,
+                "radius_point": radius_pt,
+                "radius": r,
+                "algorithm": CURRENT_ALGORITHM,
+                "color": CURRENT_COLOR,
+                "width": CURRENT_LINE_WIDTH,
+                "style": CURRENT_LINE_STYLE,
+                "circle_points": circle_pts,
+            }
+            if CURRENT_LINE_STYLE == "UserDefined":
+                circle_entry["pattern"] = CURRENT_USER_PATTERN
+            
+            # Start animation instead of appending instantly
+            global circle_animation
+            circle_animation["active"] = True
+            circle_animation["phase"] = "radius"
+            circle_animation["progress"] = 0.0
+            circle_animation["entry"] = circle_entry
+
+            print(f"[Circle] {CURRENT_ALGORITHM}: centre=({centre[0]},{centre[1]}), "
+                  f"radius={r}, {len(circle_pts)} pixels, color={CURRENT_COLOR} - Animating...")
+            
+            # Start the timer loop
+            glut.glutTimerFunc(ANIMATION_FRAME_MS, _animation_tick, 0)
+
+            # Reset selection
+            selected_points = []
+    else:
+        # Line mode: two endpoints
+        if len(selected_points) == 2:
+            p1 = selected_points[0]
+            p2 = selected_points[1]
+
+            # Compute line points using selected algorithm
+            line_pts = compute_line_points(
+                CURRENT_ALGORITHM,
+                p1[0], p1[1],
+                p2[0], p2[1],
+            )
+
+            # Store the drawn line
+            line_entry = {
+                "type": "line",
+                "p1": p1,
+                "p2": p2,
+                "algorithm": CURRENT_ALGORITHM,
+                "color": CURRENT_COLOR,
+                "width": CURRENT_LINE_WIDTH,
+                "style": CURRENT_LINE_STYLE,
+                "line_points": line_pts,
+            }
+            if CURRENT_LINE_STYLE == "UserDefined":
+                line_entry["pattern"] = CURRENT_USER_PATTERN
+            drawn_lines.append(line_entry)
+
+            print(f"[Line] {CURRENT_ALGORITHM}: ({p1[0]},{p1[1]}) → ({p2[0]},{p2[1]}), "
+                  f"{len(line_pts)} pixels, color={CURRENT_COLOR}, width={CURRENT_LINE_WIDTH}, style={CURRENT_LINE_STYLE}")
+            print(f"[Points] {line_pts}")
+
+            # Reset selection
+            selected_points = []
+            
+            # Ensure the drawn line shows up immediately without waiting for mouse move
+            glut.glutPostRedisplay()
+            
+def passive_motion(x, y):
+    """Update current mouse grid position for dynamic UI drawing."""
+    global current_mouse_grid
+    
+    if y <= MENU_HEIGHT:
+        if current_mouse_grid is not None:
+            current_mouse_grid = None
+            glut.glutPostRedisplay()
+        return
+        
+    canvas_height = CURRENT_HEIGHT - MENU_HEIGHT
+    x_world = x - CURRENT_WIDTH / 2.0
+    y_world = (CURRENT_HEIGHT - y) - canvas_height / 2.0
+
+    gx = int(round_half_up(x_world / GRID_SIZE))
+    gy = int(round_half_up(y_world / GRID_SIZE))
+    
+    if current_mouse_grid != (gx, gy):
+        current_mouse_grid = (gx, gy)
+        glut.glutPostRedisplay()
 
 
 def mouse(button, state, x, y):
@@ -606,6 +896,7 @@ def mouse(button, state, x, y):
     """
 
     global OPEN_MENU, OPEN_SUB_MENU, SAVE_DIALOG_OPEN, SAVE_DIALOG_TEXT
+    global PATTERN_DIALOG_OPEN
 
     # Only handle left mouse button.
     if button != glut.GLUT_LEFT_BUTTON:
@@ -613,6 +904,11 @@ def mouse(button, state, x, y):
 
     # Only handle button press.
     if state != glut.GLUT_DOWN:
+        return
+
+    # ── If pattern dialog is open, handle its button clicks ──────────────
+    if PATTERN_DIALOG_OPEN:
+        _handle_pattern_dialog_click(x, y)
         return
 
     # ── If save dialog is open, handle its button clicks ─────────────────
@@ -629,7 +925,8 @@ def mouse(button, state, x, y):
 
         # If click is on the menu bar, let handle_menu_click deal with it
         if y < MENU_HEIGHT:
-            handle_menu_click(x, y)
+            if y < MENU_BUTTON_HEIGHT:
+                handle_menu_click(x, y)
             return
 
         # Click is outside menu and dropdown — close dropdown
@@ -643,7 +940,8 @@ def mouse(button, state, x, y):
 
     # No dropdown open
     if y < MENU_HEIGHT:
-        handle_menu_click(x, y)
+        if y < MENU_BUTTON_HEIGHT:
+            handle_menu_click(x, y)
     else:
         handle_canvas_click(x, y)
 
@@ -695,15 +993,49 @@ def _confirm_save():
 
     # Build serializable data
     save_data = []
-    for line in drawn_lines:
-        save_data.append({
-            "p1": list(line["p1"]),
-            "p2": list(line["p2"]),
-            "algorithm": line["algorithm"],
-            "color": line["color"],
-            "width": line["width"],
-            "style": line["style"],
-        })
+    for shape in drawn_lines:
+        shape_type = shape.get("type", "line")
+        if shape_type == "circle":
+            entry = {
+                "type": "circle",
+                "center": list(shape["center"]),
+                "radius_point": list(shape["radius_point"]),
+                "radius": shape["radius"],
+                "algorithm": shape["algorithm"],
+                "color": shape["color"],
+                "width": shape["width"],
+                "style": shape.get("style", "Solid"),
+            }
+            if shape.get("style") == "UserDefined" and "pattern" in shape:
+                entry["pattern"] = shape["pattern"]
+        elif shape_type == "ellipse":
+            entry = {
+                "type": "ellipse",
+                "center": list(shape["center"]),
+                "rx_point": list(shape.get("rx_point", shape["center"])),
+                "ry_point": list(shape.get("ry_point", shape["center"])),
+                "rx": shape["rx"],
+                "ry": shape["ry"],
+                "algorithm": shape["algorithm"],
+                "color": shape["color"],
+                "width": shape["width"],
+                "style": shape.get("style", "Solid"),
+            }
+            if shape.get("style") == "UserDefined" and "pattern" in shape:
+                entry["pattern"] = shape["pattern"]
+        else:
+            entry = {
+                "type": "line",
+                "p1": list(shape["p1"]),
+                "p2": list(shape["p2"]),
+                "algorithm": shape["algorithm"],
+                "color": shape["color"],
+                "width": shape["width"],
+                "style": shape.get("style", "Solid"),
+            }
+            if shape.get("style") == "UserDefined" and "pattern" in shape:
+                entry["pattern"] = shape["pattern"]
+        save_data.append(entry)
 
     with open(filepath, "w") as f:
         json.dump(save_data, f, indent=2)
@@ -756,6 +1088,80 @@ def _handle_save_dialog_click(x, y):
     # Click outside the dialog — also keep dialog open (modal behavior)
 
 
+def _open_pattern_dialog():
+    """
+    Open the pattern input dialog so the user can enter a custom line pattern.
+    """
+    global PATTERN_DIALOG_OPEN, PATTERN_DIALOG_TEXT
+
+    PATTERN_DIALOG_TEXT = ""
+    PATTERN_DIALOG_OPEN = True
+    glut.glutPostRedisplay()
+
+
+def _confirm_pattern():
+    """
+    Apply the user-entered pattern and set line style to UserDefined.
+    """
+    global PATTERN_DIALOG_OPEN, PATTERN_DIALOG_TEXT
+    global CURRENT_LINE_STYLE, CURRENT_USER_PATTERN
+
+    pattern = PATTERN_DIALOG_TEXT.strip() if PATTERN_DIALOG_TEXT.strip() else CURRENT_USER_PATTERN
+
+    # Validate: must contain at least one '1'
+    if not any(c == '1' for c in pattern):
+        print("[Pattern] Invalid pattern — must contain at least one '1'. Using default.")
+        pattern = "11110000"
+
+    CURRENT_USER_PATTERN = pattern
+    CURRENT_LINE_STYLE = "UserDefined"
+    print(f"[Pattern] Set to: {CURRENT_USER_PATTERN}")
+
+    PATTERN_DIALOG_OPEN = False
+    PATTERN_DIALOG_TEXT = ""
+    glut.glutPostRedisplay()
+
+
+def _handle_pattern_dialog_click(x, y):
+    """
+    Handle mouse clicks when the pattern dialog is open.
+    Check if Apply or Cancel buttons were clicked.
+    """
+    global PATTERN_DIALOG_OPEN, PATTERN_DIALOG_TEXT
+
+    # Dialog dimensions (must match draw_pattern_dialog)
+    dialog_w = 480
+    dialog_h = 220
+    dlg_left = (CURRENT_WIDTH - dialog_w) / 2
+    dlg_top  = (CURRENT_HEIGHT - dialog_h) / 2
+
+    btn_w = 90
+    btn_h = 32
+    btn_y_top = dlg_top + dialog_h - 18 - btn_h
+    btn_y_bot = btn_y_top + btn_h
+
+    # Apply button (right-aligned)
+    apply_btn_left = dlg_left + dialog_w - 20 - btn_w
+    apply_btn_right = apply_btn_left + btn_w
+
+    # Cancel button (to the left of Apply)
+    cancel_btn_left = apply_btn_left - btn_w - 12
+    cancel_btn_right = cancel_btn_left + btn_w
+
+    if btn_y_top <= y <= btn_y_bot:
+        if apply_btn_left <= x <= apply_btn_right:
+            _confirm_pattern()
+            return
+        if cancel_btn_left <= x <= cancel_btn_right:
+            PATTERN_DIALOG_OPEN = False
+            PATTERN_DIALOG_TEXT = ""
+            print("[Pattern] Cancelled.")
+            glut.glutPostRedisplay()
+            return
+
+    # Click anywhere else — keep dialog open (modal behavior)
+
+
 def _do_import(filename):
     """
     Import a previously saved drawing session.
@@ -774,29 +1180,83 @@ def _do_import(filename):
     drawn_lines.clear()
     selected_points.clear()
 
-    # Reconstruct lines
+    # Reconstruct shapes (lines, circles, and ellipses)
     for entry in save_data:
-        p1 = tuple(entry["p1"])
-        p2 = tuple(entry["p2"])
+        shape_type = entry.get("type", "line")
         algorithm = entry.get("algorithm", "Bresenham")
         color = entry.get("color", "Red")
         width = entry.get("width", 1)
-        style = entry.get("style", "Solid")
 
-        line_pts = compute_line_points(algorithm, p1[0], p1[1], p2[0], p2[1])
+        if shape_type == "circle":
+            centre = tuple(entry["center"])
+            radius_pt = tuple(entry.get("radius_point", centre))
+            r = entry.get("radius", 0)
+            style = entry.get("style", "Solid")
+            pattern = entry.get("pattern", "11110000")
+            circle_pts = compute_circle_points(centre[0], centre[1], r)
+            circle_entry = {
+                "type": "circle",
+                "center": centre,
+                "radius_point": radius_pt,
+                "radius": r,
+                "algorithm": algorithm,
+                "color": color,
+                "width": width,
+                "style": style,
+                "circle_points": circle_pts,
+            }
+            if style == "UserDefined":
+                circle_entry["pattern"] = pattern
+            drawn_lines.append(circle_entry)
+        elif shape_type == "ellipse":
+            centre = tuple(entry["center"])
+            rx_pt = tuple(entry.get("rx_point", centre))
+            ry_pt = tuple(entry.get("ry_point", centre))
+            erx = entry.get("rx", 1)
+            ery = entry.get("ry", 1)
+            style = entry.get("style", "Solid")
+            pattern = entry.get("pattern", "11110000")
+            ellipse_pts = compute_ellipse_points(centre[0], centre[1], erx, ery)
+            ellipse_entry = {
+                "type": "ellipse",
+                "center": centre,
+                "rx_point": rx_pt,
+                "ry_point": ry_pt,
+                "rx": erx,
+                "ry": ery,
+                "algorithm": algorithm,
+                "color": color,
+                "width": width,
+                "style": style,
+                "ellipse_points": ellipse_pts,
+            }
+            if style == "UserDefined":
+                ellipse_entry["pattern"] = pattern
+            drawn_lines.append(ellipse_entry)
+        else:
+            p1 = tuple(entry["p1"])
+            p2 = tuple(entry["p2"])
+            style = entry.get("style", "Solid")
+            pattern = entry.get("pattern", "11110000")
 
-        drawn_lines.append({
-            "p1": p1,
-            "p2": p2,
-            "algorithm": algorithm,
-            "color": color,
-            "width": width,
-            "style": style,
-            "line_points": line_pts,
-        })
+            line_pts = compute_line_points(algorithm, p1[0], p1[1], p2[0], p2[1])
+
+            line_entry = {
+                "type": "line",
+                "p1": p1,
+                "p2": p2,
+                "algorithm": algorithm,
+                "color": color,
+                "width": width,
+                "style": style,
+                "line_points": line_pts,
+            }
+            if style == "UserDefined":
+                line_entry["pattern"] = pattern
+            drawn_lines.append(line_entry)
 
     selected_points = []
-    print(f"[Import] Loaded {len(save_data)} lines from {filename}")
+    print(f"[Import] Loaded {len(save_data)} shapes from {filename}")
     glut.glutPostRedisplay()
 
 
@@ -945,11 +1405,61 @@ def draw_tick_labels(half_height, half_width):
         y += GRID_SIZE * 5   # label every 5 grid units
 
 
-def _draw_styled_line(x1, y1, x2, y2, style, width):
+def _draw_user_defined_pattern(x1, y1, x2, y2, length, ux, uy, width, pattern):
+    """
+    Draw a line using a user-defined binary pattern string.
+    '1' = draw a pixel-sized segment, '0' = skip (gap).
+    The pattern repeats along the line.
+    Each pattern character corresponds to 'step_size' pixels of the line.
+    """
+    if not pattern:
+        pattern = "11110000"
+
+    pat_len = len(pattern)
+    # Scale each pattern character to cover ~4 pixels so the pattern is visible
+    step_size = 4.0
+
+    dist = 0.0
+    pat_idx = 0
+    drawing = False
+    seg_start_x = seg_start_y = 0.0
+
+    gl.glBegin(gl.GL_LINES)
+    while dist <= length:
+        ch = pattern[pat_idx % pat_len]
+
+        if ch == '1':
+            if not drawing:
+                # Start a new drawn segment
+                seg_start_x = x1 + ux * dist
+                seg_start_y = y1 + uy * dist
+                drawing = True
+        else:
+            if drawing:
+                # End the current drawn segment
+                seg_end_x = x1 + ux * dist
+                seg_end_y = y1 + uy * dist
+                gl.glVertex2f(seg_start_x, seg_start_y)
+                gl.glVertex2f(seg_end_x, seg_end_y)
+                drawing = False
+
+        dist += step_size
+        pat_idx += 1
+
+    # If we were still drawing at the end, close the segment to the endpoint
+    if drawing:
+        gl.glVertex2f(seg_start_x, seg_start_y)
+        gl.glVertex2f(x2, y2)
+
+    gl.glEnd()
+
+
+def _draw_styled_line(x1, y1, x2, y2, style, width, user_pattern=""):
     """
     Draw a line from (x1,y1) to (x2,y2) with the given style.
     For 'Dotted' and 'Dashed', manually break the line into segments
     because GL_LINE_STIPPLE is deprecated and broken on macOS.
+    For 'UserDefined', use the user-supplied binary pattern string.
     """
     if style == "Solid":
         gl.glBegin(gl.GL_LINES)
@@ -969,6 +1479,11 @@ def _draw_styled_line(x1, y1, x2, y2, style, width):
         gl.glVertex2f(x1, y1)
         gl.glVertex2f(x2, y2)
         gl.glEnd()
+        return
+
+    # ── User-defined pattern (binary string) ─────────────────────────────
+    if style == "UserDefined":
+        _draw_user_defined_pattern(x1, y1, x2, y2, length, ux, uy, width, user_pattern)
         return
 
     # Pattern definitions: (draw_length, gap_length) in pixels
@@ -1019,11 +1534,297 @@ def _draw_styled_line(x1, y1, x2, y2, style, width):
         gl.glEnd()
 
 
+def _draw_circle_filled_point(cx, cy, radius=3, segments=16):
+    """Draw a small filled circle at canvas coordinates (cx, cy)."""
+    gl.glBegin(gl.GL_POLYGON)
+    for i in range(segments):
+        theta = 2.0 * math.pi * i / segments
+        gl.glVertex2f(cx + radius * math.cos(theta),
+                      cy + radius * math.sin(theta))
+    gl.glEnd()
+
+
+def _draw_styled_circle(cx, cy, r, style, width, user_pattern=""):
+    """
+    Draw a smooth circle at (cx, cy) with radius r using the given style.
+    cx, cy, and r are in pixels (already multiplied by GRID_SIZE).
+    """
+    if r <= 0:
+        return
+        
+    circumference = 2 * math.pi * r
+    # Number of segments for smooth circle (more segments for larger circles)
+    segments = max(64, int(circumference / 2))
+    
+    if style == "Solid":
+        gl.glBegin(gl.GL_LINE_LOOP)
+        for i in range(segments):
+            theta = 2.0 * math.pi * i / segments
+            gl.glVertex2f(cx + r * math.cos(theta), cy + r * math.sin(theta))
+        gl.glEnd()
+        return
+
+    if style == "UserDefined":
+        if not user_pattern:
+            user_pattern = "11110000"
+        pat_len = len(user_pattern)
+        step_size = 4.0  # pixels per pattern character
+        
+        gl.glBegin(gl.GL_LINES)
+        dist = 0.0
+        pat_idx = 0
+        drawing = False
+        seg_start_theta = 0
+        
+        while dist <= circumference:
+            char = user_pattern[pat_idx % pat_len]
+            theta = (dist / circumference) * 2.0 * math.pi
+            
+            if char == '1':
+                if not drawing:
+                    seg_start_theta = theta
+                    drawing = True
+            else:
+                if drawing:
+                    # Draw curved segment
+                    dash_dist = (seg_start_theta / (2.0 * math.pi)) * circumference
+                    while dash_dist < dist:
+                        next_dist = min(dash_dist + 4.0, dist)
+                        t1 = (dash_dist / circumference) * 2.0 * math.pi
+                        t2 = (next_dist / circumference) * 2.0 * math.pi
+                        gl.glVertex2f(cx + r * math.cos(t1), cy + r * math.sin(t1))
+                        gl.glVertex2f(cx + r * math.cos(t2), cy + r * math.sin(t2))
+                        dash_dist = next_dist
+                    drawing = False
+                    
+            dist += step_size
+            pat_idx += 1
+            
+        if drawing:
+            theta = 2.0 * math.pi
+            dash_dist = (seg_start_theta / (2.0 * math.pi)) * circumference
+            while dash_dist < circumference:
+                next_dist = min(dash_dist + 4.0, circumference)
+                t1 = (dash_dist / circumference) * 2.0 * math.pi
+                t2 = (next_dist / circumference) * 2.0 * math.pi
+                gl.glVertex2f(cx + r * math.cos(t1), cy + r * math.sin(t1))
+                gl.glVertex2f(cx + r * math.cos(t2), cy + r * math.sin(t2))
+                dash_dist = next_dist
+        gl.glEnd()
+        return
+
+    if style == "Dotted":
+        dot_spacing = 6.0
+        gl.glEnable(gl.GL_POINT_SMOOTH)
+        gl.glPointSize(width if width > 1 else 2.0)
+        gl.glBegin(gl.GL_POINTS)
+        dist = 0.0
+        while dist <= circumference:
+            theta = (dist / circumference) * 2.0 * math.pi
+            gl.glVertex2f(cx + r * math.cos(theta), cy + r * math.sin(theta))
+            dist += dot_spacing
+        gl.glEnd()
+        gl.glDisable(gl.GL_POINT_SMOOTH)
+        return
+
+    # Dashed
+    draw_len, gap_len = 12.0, 8.0
+    pattern_len = draw_len + gap_len
+    
+    gl.glBegin(gl.GL_LINES)
+    dist = 0.0
+    while dist < circumference:
+        seg_start = dist
+        seg_end = min(dist + draw_len, circumference)
+        
+        # Draw curved dash segment
+        dash_dist = seg_start
+        while dash_dist < seg_end:
+            next_dist = min(dash_dist + 4.0, seg_end)
+            t1 = (dash_dist / circumference) * 2.0 * math.pi
+            t2 = (next_dist / circumference) * 2.0 * math.pi
+            gl.glVertex2f(cx + r * math.cos(t1), cy + r * math.sin(t1))
+            gl.glVertex2f(cx + r * math.cos(t2), cy + r * math.sin(t2))
+            dash_dist = next_dist
+            
+        dist += pattern_len
+    gl.glEnd()
+
+
+def _animation_tick(value):
+    """Timer callback to step the circle drawing animation."""
+    if not circle_animation["active"]:
+        return
+
+    phase = circle_animation["phase"]
+    
+    if phase == "radius":
+        circle_animation["progress"] += ANIMATION_RADIUS_SPEED
+        if circle_animation["progress"] >= 1.0:
+            circle_animation["progress"] = 1.0
+            circle_animation["phase"] = "points"
+            circle_animation["progress"] = 0.0  # Reset for points phase
+    elif phase == "points":
+        pts_len = len(circle_animation["entry"]["circle_points"])
+        # Increment depending on how fast we want it to complete
+        circle_animation["progress"] += max(1.0, pts_len / ANIMATION_POINTS_FRAMES) 
+        if circle_animation["progress"] >= pts_len:
+            circle_animation["progress"] = pts_len
+            # Animation finished
+            drawn_lines.append(circle_animation["entry"])
+            circle_animation["active"] = False
+            glut.glutPostRedisplay()
+            return
+
+    glut.glutPostRedisplay()
+    glut.glutTimerFunc(ANIMATION_FRAME_MS, _animation_tick, 0)
+
+
+def _ellipse_animation_tick(value):
+    """Timer callback to step the ellipse drawing animation."""
+    if not ellipse_animation["active"]:
+        return
+
+    phase = ellipse_animation["phase"]
+
+    if phase == "rx":
+        ellipse_animation["progress"] += ANIMATION_RADIUS_SPEED
+        if ellipse_animation["progress"] >= 1.0:
+            ellipse_animation["progress"] = 0.0
+            ellipse_animation["phase"] = "ry"
+    elif phase == "ry":
+        ellipse_animation["progress"] += ANIMATION_RADIUS_SPEED
+        if ellipse_animation["progress"] >= 1.0:
+            ellipse_animation["progress"] = 0.0
+            ellipse_animation["phase"] = "points"
+    elif phase == "points":
+        pts_len = len(ellipse_animation["entry"]["ellipse_points"])
+        ellipse_animation["progress"] += max(1.0, pts_len / ANIMATION_POINTS_FRAMES)
+        if ellipse_animation["progress"] >= pts_len:
+            ellipse_animation["progress"] = pts_len
+            drawn_lines.append(ellipse_animation["entry"])
+            ellipse_animation["active"] = False
+            glut.glutPostRedisplay()
+            return
+
+    glut.glutPostRedisplay()
+    glut.glutTimerFunc(ANIMATION_FRAME_MS, _ellipse_animation_tick, 0)
+
+
+def _draw_styled_ellipse(cx, cy, rx, ry, style, width, user_pattern=""):
+    """
+    Draw a smooth ellipse at (cx, cy) with semi-axes rx, ry using the given style.
+    cx, cy, rx, ry are in pixels (already multiplied by GRID_SIZE).
+    """
+    if rx <= 0 and ry <= 0:
+        return
+
+    # Approximate ellipse circumference using Ramanujan's approximation
+    circ = math.pi * (3 * (rx + ry) - math.sqrt((3 * rx + ry) * (rx + 3 * ry)))
+    segments = max(64, int(circ / 2))
+
+    if style == "Solid":
+        gl.glBegin(gl.GL_LINE_LOOP)
+        for i in range(segments):
+            theta = 2.0 * math.pi * i / segments
+            gl.glVertex2f(cx + rx * math.cos(theta), cy + ry * math.sin(theta))
+        gl.glEnd()
+        return
+
+    circumference = circ
+
+    if style == "UserDefined":
+        if not user_pattern:
+            user_pattern = "11110000"
+        pat_len = len(user_pattern)
+        step_size = 4.0
+
+        gl.glBegin(gl.GL_LINES)
+        dist = 0.0
+        pat_idx = 0
+        drawing = False
+        seg_start_theta = 0
+
+        while dist <= circumference:
+            char = user_pattern[pat_idx % pat_len]
+            theta = (dist / circumference) * 2.0 * math.pi
+
+            if char == '1':
+                if not drawing:
+                    seg_start_theta = theta
+                    drawing = True
+            else:
+                if drawing:
+                    dash_dist = (seg_start_theta / (2.0 * math.pi)) * circumference
+                    while dash_dist < dist:
+                        next_dist = min(dash_dist + 4.0, dist)
+                        t1 = (dash_dist / circumference) * 2.0 * math.pi
+                        t2 = (next_dist / circumference) * 2.0 * math.pi
+                        gl.glVertex2f(cx + rx * math.cos(t1), cy + ry * math.sin(t1))
+                        gl.glVertex2f(cx + rx * math.cos(t2), cy + ry * math.sin(t2))
+                        dash_dist = next_dist
+                    drawing = False
+
+            dist += step_size
+            pat_idx += 1
+
+        if drawing:
+            dash_dist = (seg_start_theta / (2.0 * math.pi)) * circumference
+            while dash_dist < circumference:
+                next_dist = min(dash_dist + 4.0, circumference)
+                t1 = (dash_dist / circumference) * 2.0 * math.pi
+                t2 = (next_dist / circumference) * 2.0 * math.pi
+                gl.glVertex2f(cx + rx * math.cos(t1), cy + ry * math.sin(t1))
+                gl.glVertex2f(cx + rx * math.cos(t2), cy + ry * math.sin(t2))
+                dash_dist = next_dist
+        gl.glEnd()
+        return
+
+    if style == "Dotted":
+        dot_spacing = 6.0
+        gl.glEnable(gl.GL_POINT_SMOOTH)
+        gl.glPointSize(width if width > 1 else 2.0)
+        gl.glBegin(gl.GL_POINTS)
+        dist = 0.0
+        while dist <= circumference:
+            theta = (dist / circumference) * 2.0 * math.pi
+            gl.glVertex2f(cx + rx * math.cos(theta), cy + ry * math.sin(theta))
+            dist += dot_spacing
+        gl.glEnd()
+        gl.glDisable(gl.GL_POINT_SMOOTH)
+        return
+
+    # Dashed
+    draw_len, gap_len = 12.0, 8.0
+    pattern_len = draw_len + gap_len
+
+    gl.glBegin(gl.GL_LINES)
+    dist = 0.0
+    while dist < circumference:
+        seg_start = dist
+        seg_end = min(dist + draw_len, circumference)
+
+        dash_dist = seg_start
+        while dash_dist < seg_end:
+            next_dist = min(dash_dist + 4.0, seg_end)
+            t1 = (dash_dist / circumference) * 2.0 * math.pi
+            t2 = (next_dist / circumference) * 2.0 * math.pi
+            gl.glVertex2f(cx + rx * math.cos(t1), cy + ry * math.sin(t1))
+            gl.glVertex2f(cx + rx * math.cos(t2), cy + ry * math.sin(t2))
+            dash_dist = next_dist
+
+        dist += pattern_len
+    gl.glEnd()
+
+
 def draw_lines_on_canvas():
     """
-    Draw all user-drawn lines on the canvas as straight lines from p1 to p2.
-    The algorithm-computed pixel points are printed to the terminal only.
+    Draw all user-drawn shapes (lines, circles, and ellipses) on the canvas.
+    Lines are drawn as straight lines from p1 to p2.
+    Circles are drawn as connected outlines through all computed pixel positions.
+    Ellipses are drawn as smooth outlines using the mid-point ellipse algorithm.
     """
+
 
     # Enable smooth lines
     gl.glEnable(gl.GL_LINE_SMOOTH)
@@ -1031,26 +1832,201 @@ def draw_lines_on_canvas():
     gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
     gl.glHint(gl.GL_LINE_SMOOTH_HINT, gl.GL_NICEST)
 
-    for line in drawn_lines:
-        p1 = line["p1"]
-        p2 = line["p2"]
-        color = COLOR_MAP.get(line["color"], (1.0, 0.0, 0.0))
-        width = line["width"]
-        style = line["style"]
+    # 1. Draw completed lines
+    for shape in drawn_lines:
+        color = COLOR_MAP.get(shape["color"], (1.0, 0.0, 0.0))
+        width = shape["width"]
 
-        # Set line color
+        # Set color and width
         gl.glColor3f(*color)
-
-        # Set line width
         gl.glLineWidth(width)
 
-        # Draw the line with the appropriate style
-        _draw_styled_line(
-            p1[0] * GRID_SIZE, p1[1] * GRID_SIZE,
-            p2[0] * GRID_SIZE, p2[1] * GRID_SIZE,
-            style,
-            width,
-        )
+        shape_type = shape.get("type", "line")
+
+        style = shape.get("style", "Solid")
+        user_pattern = shape.get("pattern", "")
+        
+        if style == "Dashed":
+            gl.glEnable(gl.GL_LINE_STIPPLE)
+            gl.glLineStipple(1, 0x00FF)
+        elif style == "Dotted":
+            gl.glEnable(gl.GL_LINE_STIPPLE)
+            gl.glLineStipple(1, 0x0101)
+        elif style == "UserDefined":
+            gl.glEnable(gl.GL_LINE_STIPPLE)
+            try:
+                pattern = int(user_pattern, 2) if user_pattern else 0xFFFF
+            except ValueError:
+                pattern = 0xFFFF
+            gl.glLineStipple(1, pattern)
+        else:
+            gl.glDisable(gl.GL_LINE_STIPPLE)
+            
+        if shape_type == "circle":
+            pts = shape.get("circle_points", [])
+            gl.glBegin(gl.GL_LINE_LOOP)
+            for p in pts:
+                gl.glVertex2f(p[0] * GRID_SIZE, p[1] * GRID_SIZE)
+            gl.glEnd()
+            
+            # Mark the centre point
+            centre = shape.get("center", (0, 0))
+            gl.glColor3f(0.0, 0.0, 0.0)
+            _draw_circle_filled_point(centre[0] * GRID_SIZE, centre[1] * GRID_SIZE, radius=3)
+            gl.glColor3f(*color)  # Restore color
+            
+        elif shape_type == "ellipse":
+            pts = shape.get("ellipse_points", [])
+            gl.glBegin(gl.GL_LINE_LOOP)
+            for p in pts:
+                gl.glVertex2f(p[0] * GRID_SIZE, p[1] * GRID_SIZE)
+            gl.glEnd()
+            
+            # Mark the centre point
+            centre = shape.get("center", (0, 0))
+            gl.glColor3f(0.0, 0.0, 0.0)
+            _draw_circle_filled_point(centre[0] * GRID_SIZE, centre[1] * GRID_SIZE, radius=3)
+            gl.glColor3f(*color)  # Restore color
+            
+        else:
+            # Draw line
+            pts = shape.get("line_points", [])
+            gl.glBegin(gl.GL_LINE_STRIP)
+            for p in pts:
+                gl.glVertex2f(p[0] * GRID_SIZE, p[1] * GRID_SIZE)
+            gl.glEnd()
+            
+        gl.glDisable(gl.GL_LINE_STIPPLE)
+
+    # 2. Draw active animation
+    if circle_animation["active"]:
+        entry = circle_animation["entry"]
+        color = COLOR_MAP.get(entry["color"], (1.0, 0.0, 0.0))
+        width = entry["width"]
+        gl.glColor3f(*color)
+        gl.glLineWidth(width)
+        
+        c = entry["center"]
+        cx = c[0] * GRID_SIZE
+        cy = c[1] * GRID_SIZE
+        
+        rp = entry["radius_point"]
+        rpx = rp[0] * GRID_SIZE
+        rpy = rp[1] * GRID_SIZE
+
+        # Draw centre dot
+        gl.glColor3f(0.0, 0.0, 0.0)
+        _draw_circle_filled_point(cx, cy, radius=3)
+        gl.glColor3f(*color)
+        
+        phase = circle_animation["phase"]
+        prog = circle_animation["progress"]
+
+        if phase == "radius":
+            # Draw line growing from centre to radius_point
+            curr_x = cx + (rpx - cx) * prog
+            curr_y = cy + (rpy - cy) * prog
+            
+            # Use dotted for the radius guide
+            _draw_styled_line(cx, cy, curr_x, curr_y, "Dotted", 1, "")
+            
+            # Small marker at the current tip
+            gl.glColor3f(0.5, 0.5, 0.5)
+            _draw_circle_filled_point(curr_x, curr_y, radius=3)
+            gl.glColor3f(*color)
+            
+        elif phase == "points":
+            # Draw full radius guide faintly
+            _draw_styled_line(cx, cy, rpx, rpy, "Dotted", 1, "")
+            
+            # Animate the computed pixels popping up (since they are sorted by angle, it looks like a sweep)
+            limit = int(prog)
+            pts = entry["circle_points"]
+            
+            gl.glEnable(gl.GL_POINT_SMOOTH)
+            gl.glPointSize(width + 2.0)
+            gl.glBegin(gl.GL_POINTS)
+            for i in range(min(limit, len(pts))):
+                pt = pts[i]
+                gl.glVertex2f(pt[0] * GRID_SIZE, pt[1] * GRID_SIZE)
+            gl.glEnd()
+            gl.glDisable(gl.GL_POINT_SMOOTH)
+
+    # 3. Draw active ellipse animation
+    if ellipse_animation["active"]:
+        entry = ellipse_animation["entry"]
+        color = COLOR_MAP.get(entry["color"], (1.0, 0.0, 0.0))
+        width = entry["width"]
+        gl.glColor3f(*color)
+        gl.glLineWidth(width)
+
+        c = entry["center"]
+        cx = c[0] * GRID_SIZE
+        cy = c[1] * GRID_SIZE
+
+        erx = entry["rx"] * GRID_SIZE
+        ery = entry["ry"] * GRID_SIZE
+
+        # Draw centre dot
+        gl.glColor3f(0.0, 0.0, 0.0)
+        _draw_circle_filled_point(cx, cy, radius=3)
+        gl.glColor3f(*color)
+
+        phase = ellipse_animation["phase"]
+        prog = ellipse_animation["progress"]
+
+        rx_pt = entry.get("rx_point", c)
+        ry_pt = entry.get("ry_point", c)
+        
+        rx_px = rx_pt[0] * GRID_SIZE
+        rx_py = rx_pt[1] * GRID_SIZE
+        
+        ry_px = ry_pt[0] * GRID_SIZE
+        ry_py = ry_pt[1] * GRID_SIZE
+
+        if phase == "rx":
+            # Animate the major axis guide
+            curr_x = cx + (rx_px - cx) * prog
+            curr_y = cy + (rx_py - cy) * prog
+            gl.glColor3f(0.5, 0.5, 0.5)
+            _draw_styled_line(cx, cy, curr_x, curr_y, "Dotted", 1, "")
+            _draw_circle_filled_point(curr_x, curr_y, radius=3)
+            gl.glColor3f(*color)
+
+        elif phase == "ry":
+            # Draw full major guide faintly
+            gl.glColor3f(0.5, 0.5, 0.5)
+            _draw_styled_line(cx, cy, rx_px, rx_py, "Dotted", 1, "")
+            _draw_circle_filled_point(rx_px, rx_py, radius=3)
+
+            # Animate the minor axis guide
+            curr_x = cx + (ry_px - cx) * prog
+            curr_y = cy + (ry_py - cy) * prog
+            _draw_styled_line(cx, cy, curr_x, curr_y, "Dotted", 1, "")
+            _draw_circle_filled_point(curr_x, curr_y, radius=3)
+            gl.glColor3f(*color)
+
+        elif phase == "points":
+            # Draw full guides faintly
+            gl.glColor3f(0.5, 0.5, 0.5)
+            _draw_styled_line(cx, cy, rx_px, rx_py, "Dotted", 1, "")
+            _draw_circle_filled_point(rx_px, rx_py, radius=3)
+            _draw_styled_line(cx, cy, ry_px, ry_py, "Dotted", 1, "")
+            _draw_circle_filled_point(ry_px, ry_py, radius=3)
+            gl.glColor3f(*color)
+
+            # Animate the computed pixels popping up
+            limit = int(prog)
+            pts = entry["ellipse_points"]
+
+            gl.glEnable(gl.GL_POINT_SMOOTH)
+            gl.glPointSize(width + 2.0)
+            gl.glBegin(gl.GL_POINTS)
+            for i in range(min(limit, len(pts))):
+                pt = pts[i]
+                gl.glVertex2f(pt[0] * GRID_SIZE, pt[1] * GRID_SIZE)
+            gl.glEnd()
+            gl.glDisable(gl.GL_POINT_SMOOTH)
 
     # Reset line width
     gl.glLineWidth(1)
@@ -1062,7 +2038,8 @@ def draw_lines_on_canvas():
 
 def draw_selected_points():
     """
-    Draw the currently selected (pending) point(s) as markers.
+    Draw the currently selected (pending) point(s) as markers,
+    including dashed guide lines from centre for ellipse mode.
     """
 
     if not selected_points:
@@ -1095,6 +2072,7 @@ def draw_selected_points():
         gl.glColor3f(*POINT_MARKER_COLOR)
 
 
+
 def draw_canvas():
     """
     Draw the complete Cartesian drawing canvas.
@@ -1115,10 +2093,10 @@ def draw_canvas():
         half_width,
     )
 
-    draw_tick_labels(
-        half_height,
-        half_width,
-    )
+    # draw_tick_labels(
+    #     half_height,
+    #     half_width,
+    # )
 
     # Draw all user lines
     draw_lines_on_canvas()
@@ -1205,8 +2183,8 @@ def draw_menu():
             gl.glBegin(gl.GL_QUADS)
             gl.glVertex2f(left, 0)
             gl.glVertex2f(right, 0)
-            gl.glVertex2f(right, MENU_HEIGHT)
-            gl.glVertex2f(left, MENU_HEIGHT)
+            gl.glVertex2f(right, MENU_BUTTON_HEIGHT)
+            gl.glVertex2f(left, MENU_BUTTON_HEIGHT)
             gl.glEnd()
 
         # Item border
@@ -1215,18 +2193,33 @@ def draw_menu():
         gl.glBegin(gl.GL_LINE_LOOP)
         gl.glVertex2f(left, 0)
         gl.glVertex2f(right, 0)
-        gl.glVertex2f(right, MENU_HEIGHT)
-        gl.glVertex2f(left, MENU_HEIGHT)
+        gl.glVertex2f(right, MENU_BUTTON_HEIGHT)
+        gl.glVertex2f(left, MENU_BUTTON_HEIGHT)
         gl.glEnd()
 
         # Item text — centered
         text_x = left + (menu_item_width - len(item) * 7) / 2
-        text_y = MENU_HEIGHT / 2 + 5
+        text_y = MENU_BUTTON_HEIGHT / 2 + 5
         draw_menu_text(text_x, text_y, item, MENU_TEXT_COLOR)
 
     # Draw status bar text showing current settings
-    status = f"  {CURRENT_ALGORITHM} | {CURRENT_COLOR} | Width:{CURRENT_LINE_WIDTH} | {CURRENT_LINE_STYLE}"
-    draw_menu_text(5, MENU_HEIGHT - 3, status, (0.55, 0.55, 0.55))
+    if is_ellipse_algorithm(CURRENT_ALGORITHM):
+        if len(selected_points) == 0:
+            click_hint = "Click to set centre"
+        elif len(selected_points) == 1:
+            click_hint = "Click to set horizontal radius (rx)"
+        else:
+            click_hint = "Click to set vertical radius (ry)"
+        status = f"  {CURRENT_ALGORITHM} | {CURRENT_COLOR} | Width:{CURRENT_LINE_WIDTH} | {click_hint}"
+    elif is_circle_algorithm(CURRENT_ALGORITHM):
+        click_hint = "Click centre, then radius point" if len(selected_points) == 0 else "Click to set radius"
+        status = f"  {CURRENT_ALGORITHM} | {CURRENT_COLOR} | Width:{CURRENT_LINE_WIDTH} | {click_hint}"
+    else:
+        style_display = CURRENT_LINE_STYLE
+        if CURRENT_LINE_STYLE == "UserDefined":
+            style_display = f"UserDefined({CURRENT_USER_PATTERN})"
+        status = f"  {CURRENT_ALGORITHM} | {CURRENT_COLOR} | Width:{CURRENT_LINE_WIDTH} | {style_display}"
+    draw_menu_text(5, MENU_HEIGHT - 6, status, (0.55, 0.55, 0.55))
 
 
 def draw_dropdown():
@@ -1251,7 +2244,7 @@ def draw_dropdown():
     menu_left, _ = get_menu_item_bounds_px(menu_index)
 
     dd_left = menu_left
-    dd_top = MENU_HEIGHT
+    dd_top = MENU_BUTTON_HEIGHT
 
     # Draw dropdown background
     dd_height = len(dropdown_items) * DROPDOWN_ITEM_HEIGHT
@@ -1283,6 +2276,8 @@ def draw_dropdown():
             elif item == "Dotted Line" and CURRENT_LINE_STYLE == "Dotted":
                 is_active = True
             elif item == "Dashed Line" and CURRENT_LINE_STYLE == "Dashed":
+                is_active = True
+            elif item == "User Defined" and CURRENT_LINE_STYLE == "UserDefined":
                 is_active = True
 
         if is_active:
@@ -1567,6 +2562,225 @@ def draw_save_dialog():
     gl.glDisable(gl.GL_BLEND)
 
 
+def draw_pattern_dialog():
+    """
+    Draw the "User Defined Pattern" popup dialog over the canvas.
+    """
+    global PATTERN_DIALOG_CURSOR_BLINK
+
+    if not PATTERN_DIALOG_OPEN:
+        return
+
+    PATTERN_DIALOG_CURSOR_BLINK = (PATTERN_DIALOG_CURSOR_BLINK + 1) % 60
+
+    # ── Semi-transparent overlay ──────────────────────────────────────────
+    gl.glEnable(gl.GL_BLEND)
+    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+    gl.glColor4f(0.0, 0.0, 0.0, 0.45)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(0, 0)
+    gl.glVertex2f(CURRENT_WIDTH, 0)
+    gl.glVertex2f(CURRENT_WIDTH, CURRENT_HEIGHT)
+    gl.glVertex2f(0, CURRENT_HEIGHT)
+    gl.glEnd()
+
+    # ── Dialog box dimensions ────────────────────────────────────────────
+    dialog_w = 480
+    dialog_h = 220
+    dlg_left   = (CURRENT_WIDTH - dialog_w) / 2
+    dlg_right  = dlg_left + dialog_w
+    dlg_top    = (CURRENT_HEIGHT - dialog_h) / 2
+    dlg_bottom = dlg_top + dialog_h
+
+    # ── Dialog shadow ────────────────────────────────────────────────────
+    shadow_off = 5
+    gl.glColor4f(0.0, 0.0, 0.0, 0.25)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(dlg_left + shadow_off, dlg_top + shadow_off)
+    gl.glVertex2f(dlg_right + shadow_off, dlg_top + shadow_off)
+    gl.glVertex2f(dlg_right + shadow_off, dlg_bottom + shadow_off)
+    gl.glVertex2f(dlg_left + shadow_off, dlg_bottom + shadow_off)
+    gl.glEnd()
+
+    # ── Dialog background ────────────────────────────────────────────────
+    gl.glColor3f(0.18, 0.18, 0.22)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(dlg_left, dlg_top)
+    gl.glVertex2f(dlg_right, dlg_top)
+    gl.glVertex2f(dlg_right, dlg_bottom)
+    gl.glVertex2f(dlg_left, dlg_bottom)
+    gl.glEnd()
+
+    # ── Dialog border ────────────────────────────────────────────────────
+    gl.glColor3f(0.45, 0.45, 0.50)
+    gl.glLineWidth(2)
+    gl.glBegin(gl.GL_LINE_LOOP)
+    gl.glVertex2f(dlg_left, dlg_top)
+    gl.glVertex2f(dlg_right, dlg_top)
+    gl.glVertex2f(dlg_right, dlg_bottom)
+    gl.glVertex2f(dlg_left, dlg_bottom)
+    gl.glEnd()
+
+    # ── Title ────────────────────────────────────────────────────────────
+    title = "User Defined Line Pattern"
+    title_x = dlg_left + (dialog_w - len(title) * 8) / 2
+    title_y = dlg_top + 28
+    gl.glColor3f(0.95, 0.95, 0.95)
+    gl.glRasterPos2f(title_x, title_y)
+    for ch in title:
+        glut.glutBitmapCharacter(glut.GLUT_BITMAP_HELVETICA_18, ord(ch))
+
+    # ── Separator line under title ───────────────────────────────────────
+    gl.glColor3f(0.35, 0.35, 0.40)
+    gl.glLineWidth(1)
+    gl.glBegin(gl.GL_LINES)
+    gl.glVertex2f(dlg_left + 15, dlg_top + 38)
+    gl.glVertex2f(dlg_right - 15, dlg_top + 38)
+    gl.glEnd()
+
+    # ── Label ────────────────────────────────────────────────────────────
+    label = "Enter pattern (1=draw, 0=gap):"
+    gl.glColor3f(0.75, 0.75, 0.78)
+    gl.glRasterPos2f(dlg_left + 20, dlg_top + 62)
+    for ch in label:
+        glut.glutBitmapCharacter(glut.GLUT_BITMAP_HELVETICA_12, ord(ch))
+
+    # ── Text input field ─────────────────────────────────────────────────
+    input_left   = dlg_left + 20
+    input_right  = dlg_right - 20
+    input_top    = dlg_top + 72
+    input_bottom = input_top + 30
+
+    # Input background
+    gl.glColor3f(0.12, 0.12, 0.15)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(input_left, input_top)
+    gl.glVertex2f(input_right, input_top)
+    gl.glVertex2f(input_right, input_bottom)
+    gl.glVertex2f(input_left, input_bottom)
+    gl.glEnd()
+
+    # Input border
+    gl.glColor3f(0.70, 0.45, 0.90)
+    gl.glLineWidth(2)
+    gl.glBegin(gl.GL_LINE_LOOP)
+    gl.glVertex2f(input_left, input_top)
+    gl.glVertex2f(input_right, input_top)
+    gl.glVertex2f(input_right, input_bottom)
+    gl.glVertex2f(input_left, input_bottom)
+    gl.glEnd()
+
+    # Display text (user input or placeholder)
+    text_y = input_top + 20
+    if PATTERN_DIALOG_TEXT:
+        display_text = PATTERN_DIALOG_TEXT
+        gl.glColor3f(0.95, 0.95, 0.95)
+    else:
+        display_text = CURRENT_USER_PATTERN
+        gl.glColor3f(0.45, 0.45, 0.50)   # Dimmed placeholder
+
+    gl.glRasterPos2f(input_left + 8, text_y)
+    for ch in display_text:
+        glut.glutBitmapCharacter(glut.GLUT_BITMAP_HELVETICA_12, ord(ch))
+
+    # Blinking cursor
+    if PATTERN_DIALOG_TEXT and PATTERN_DIALOG_CURSOR_BLINK < 35:
+        cursor_x = input_left + 8 + len(PATTERN_DIALOG_TEXT) * 7
+        gl.glColor3f(0.90, 0.90, 0.95)
+        gl.glLineWidth(1)
+        gl.glBegin(gl.GL_LINES)
+        gl.glVertex2f(cursor_x, input_top + 6)
+        gl.glVertex2f(cursor_x, input_bottom - 6)
+        gl.glEnd()
+
+    # ── Pattern preview ──────────────────────────────────────────────────
+    preview_pattern = PATTERN_DIALOG_TEXT if PATTERN_DIALOG_TEXT else CURRENT_USER_PATTERN
+    preview_label = f"Preview:  {preview_pattern}"
+    gl.glColor3f(0.60, 0.60, 0.65)
+    gl.glRasterPos2f(dlg_left + 20, input_bottom + 18)
+    for ch in preview_label:
+        glut.glutBitmapCharacter(glut.GLUT_BITMAP_HELVETICA_10, ord(ch))
+
+    # Draw a visual preview line using the pattern
+    preview_y = input_bottom + 30
+    preview_left = dlg_left + 20
+    preview_right = dlg_right - 20
+    preview_total = preview_right - preview_left
+
+    if preview_pattern and any(c == '1' for c in preview_pattern):
+        pat_len = len(preview_pattern)
+        step = preview_total / max(pat_len * 3, 1)  # repeat ~3 times
+        gl.glColor3f(0.90, 0.90, 0.95)
+        gl.glLineWidth(2)
+        gl.glBegin(gl.GL_LINES)
+        px = preview_left
+        idx = 0
+        drawing = False
+        seg_sx = 0.0
+        while px <= preview_right:
+            ch = preview_pattern[idx % pat_len]
+            if ch == '1':
+                if not drawing:
+                    seg_sx = px
+                    drawing = True
+            else:
+                if drawing:
+                    gl.glVertex2f(seg_sx, preview_y)
+                    gl.glVertex2f(px, preview_y)
+                    drawing = False
+            px += step
+            idx += 1
+        if drawing:
+            gl.glVertex2f(seg_sx, preview_y)
+            gl.glVertex2f(min(px, preview_right), preview_y)
+        gl.glEnd()
+
+    # ── Hint text ────────────────────────────────────────────────────────
+    hint = "Press Enter to apply, Escape to cancel. Only 0 and 1 allowed."
+    gl.glColor3f(0.50, 0.50, 0.55)
+    gl.glRasterPos2f(dlg_left + 20, preview_y + 16)
+    for ch in hint:
+        glut.glutBitmapCharacter(glut.GLUT_BITMAP_HELVETICA_10, ord(ch))
+
+    # ── Buttons ──────────────────────────────────────────────────────────
+    btn_w = 90
+    btn_h = 32
+    btn_y_top = dlg_bottom - 18 - btn_h
+    btn_y_bot = btn_y_top + btn_h
+
+    # Apply button (right-aligned, accent color)
+    apply_btn_left = dlg_right - 20 - btn_w
+    gl.glColor3f(0.55, 0.28, 0.85)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(apply_btn_left, btn_y_top)
+    gl.glVertex2f(apply_btn_left + btn_w, btn_y_top)
+    gl.glVertex2f(apply_btn_left + btn_w, btn_y_bot)
+    gl.glVertex2f(apply_btn_left, btn_y_bot)
+    gl.glEnd()
+    # Apply button text
+    gl.glColor3f(1.0, 1.0, 1.0)
+    gl.glRasterPos2f(apply_btn_left + 25, btn_y_top + 21)
+    for ch in "Apply":
+        glut.glutBitmapCharacter(glut.GLUT_BITMAP_HELVETICA_12, ord(ch))
+
+    # Cancel button (to the left of Apply)
+    cancel_btn_left = apply_btn_left - btn_w - 12
+    gl.glColor3f(0.32, 0.32, 0.36)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(cancel_btn_left, btn_y_top)
+    gl.glVertex2f(cancel_btn_left + btn_w, btn_y_top)
+    gl.glVertex2f(cancel_btn_left + btn_w, btn_y_bot)
+    gl.glVertex2f(cancel_btn_left, btn_y_bot)
+    gl.glEnd()
+    # Cancel button text
+    gl.glColor3f(0.85, 0.85, 0.85)
+    gl.glRasterPos2f(cancel_btn_left + 22, btn_y_top + 21)
+    for ch in "Cancel":
+        glut.glutBitmapCharacter(glut.GLUT_BITMAP_HELVETICA_12, ord(ch))
+
+    gl.glDisable(gl.GL_BLEND)
+
+
 def display():
     """
     Render the complete application window.
@@ -1603,6 +2817,7 @@ def display():
     # ------------------------------------------------------------------------
 
     draw_save_dialog()
+    draw_pattern_dialog()
 
     # ------------------------------------------------------------------------
     # Present Frame
@@ -1678,17 +2893,20 @@ def run():
     glut.glutDisplayFunc(display)
     glut.glutKeyboardFunc(keyboard)
     glut.glutMouseFunc(mouse)
+    glut.glutPassiveMotionFunc(passive_motion)
 
     # ------------------------------------------------------------------------
     # Print usage info
     # ------------------------------------------------------------------------
 
-    print("=== Line Drawing Algorithm Application ===")
+    print("=== Line, Circle & Ellipse Drawing Algorithm Application ===")
     print(f"Default algorithm: {CURRENT_ALGORITHM}")
     print(f"Default color: {CURRENT_COLOR}")
     print(f"Default width: {CURRENT_LINE_WIDTH}")
     print(f"Default style: {CURRENT_LINE_STYLE}")
     print("Click two points on the canvas to draw a line.")
+    print("For Mid Point Circle: click centre, then a point to define the radius.")
+    print("For Mid Point Ellipse: click centre, then rx point, then ry point.")
     print("Press 'P' to save a screenshot to output/")
     print("Press 'Esc' to exit.")
 

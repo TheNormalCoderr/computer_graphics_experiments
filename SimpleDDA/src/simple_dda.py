@@ -101,6 +101,17 @@ def save_framebuffer(filepath, width, height):
 # ───────────────────────────────────────────────────────────────────────────
 # Core DDA — returns list of (int, int) rasterised grid positions
 # ───────────────────────────────────────────────────────────────────────────
+def sym_round(n):
+    """
+    Symmetric rounding: half-way values always round away from zero.
+    This prevents asymmetry (bumps) in negative coordinates.
+    """
+    if n > 0:
+        return math.floor(n + 0.5)
+    elif n < 0:
+        return math.ceil(n - 0.5)
+    return 0
+
 def dda_points(x1: float, y1: float, x2: float, y2: float):
     """
     Simple DDA — manual implementation.
@@ -108,20 +119,20 @@ def dda_points(x1: float, y1: float, x2: float, y2: float):
     1. dx = x2 - x1,   dy = y2 - y1
     2. steps = max(|dx|, |dy|)
     3. x_inc = dx / steps,  y_inc = dy / steps
-    4. Plot round(x), round(y) for i = 0 … steps.
+    4. Plot sym_round(x), sym_round(y) for i = 0 … steps.
     """
     dx    = x2 - x1
     dy    = y2 - y1
     steps = int(max(abs(dx), abs(dy)))
     if steps == 0:
-        return [(math.floor(x1 + 0.5), math.floor(y1 + 0.5))]
+        return [(sym_round(x1), sym_round(y1))]
 
     x_inc = dx / steps
     y_inc = dy / steps
     x, y  = float(x1), float(y1)
     pts   = []
     for _ in range(steps + 1):
-        pts.append((math.floor(x + 0.5), math.floor(y + 0.5)))
+        pts.append((sym_round(x), sym_round(y)))
         x += x_inc
         y += y_inc
     return pts

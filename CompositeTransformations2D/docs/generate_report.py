@@ -220,9 +220,77 @@ def main():
     body("6. Display the original shape (blue), transformed shape (red), pivot/axis indicators (green), and coordinate labels on the OpenGL canvas.")
 
     # ══════════════════════════════════════════════════════════════════════
-    # 6. Implementation & Test Cases
+    # 6. Implementation
     # ══════════════════════════════════════════════════════════════════════
-    section_label("Implementation & Test Cases:")
+    section_label("Implementation:")
+
+    body(
+        "The implementation builds composite matrices by translating the reference point or axis to the origin, applying "
+        "the required operation, and translating or rotating back. Matrix products are applied in reverse chronological "
+        "order so that the vertex sequence follows the stated transformation sequence."
+    )
+    sub_label("Pivot Rotation and Fixed-Point Scaling:")
+    code_block("""
+def transform_about_point_matrix(pivot_x, pivot_y, angle_deg=0.0, sx=1.0, sy=1.0):
+    to_origin = translation_matrix(-pivot_x, -pivot_y)
+    scale = scaling_matrix(sx, sy)
+    rotate = rotation_matrix(angle_deg)
+    from_origin = translation_matrix(pivot_x, pivot_y)
+    return mat3_multiply(from_origin,
+        mat3_multiply(rotate, mat3_multiply(scale, to_origin)))
+
+def scale_about_point_matrix(fixed_x, fixed_y, sx, sy):
+    return transform_about_point_matrix(
+        fixed_x, fixed_y, sx=sx, sy=sy)
+""")
+
+    sub_label("Arbitrary-Axis Reflection and Scaling:")
+    code_block("""
+def transform_about_axis_matrix(x1, y1, x2, y2):
+    theta = math.degrees(math.atan2(y2 - y1, x2 - x1))
+    return compose_transformations(
+        translation_matrix(-x1, -y1),
+        rotation_matrix(-theta), reflection_x_matrix(),
+        rotation_matrix(theta), translation_matrix(x1, y1))
+
+def scale_along_axis_matrix(x1, y1, x2, y2, s_along, s_perp):
+    theta = math.degrees(math.atan2(y2 - y1, x2 - x1))
+    return compose_transformations(
+        translation_matrix(-x1, -y1), rotation_matrix(-theta),
+        scaling_matrix(s_along, s_perp), rotation_matrix(theta),
+        translation_matrix(x1, y1))
+""")
+
+    sub_label("Applying the Composite Transformation:")
+    code_block("""
+def apply_composite_transformation(vertices, tc_type, params):
+    if tc_type == "pivot_rotation":
+        M = transform_about_point_matrix(
+            params["pivot_x"], params["pivot_y"],
+            angle_deg=params["angle_deg"])
+    elif tc_type == "fixed_point_scaling":
+        M = scale_about_point_matrix(
+            params["fixed_x"], params["fixed_y"],
+            params["sx"], params["sy"])
+    elif tc_type == "axis_reflection":
+        M = transform_about_axis_matrix(
+            params["x1"], params["y1"], params["x2"], params["y2"])
+    elif tc_type == "axis_scaling":
+        M = scale_along_axis_matrix(
+            params["x1"], params["y1"], params["x2"], params["y2"],
+            params["s_along"], params["s_perp"])
+    elif tc_type == "general_sequence":
+        M = composite_sequence_matrix(
+            params["tx"], params["ty"], params["pivot_x"],
+            params["pivot_y"], params["angle_deg"],
+            params["sx"], params["sy"])
+    transformed = [mat3_transform_point(M, x, y) for x, y in vertices]
+    return transformed, M
+""")
+
+    # 7. Test Cases
+    # ══════════════════════════════════════════════════════════════════════
+    section_label("Test Cases:")
 
     tc_table_headers = ["Test Case", "Type", "Original Vertices", "Parameters", "Transformed Vertices"]
     tc_table_rows = []
@@ -241,47 +309,6 @@ def main():
 
     add_table(tc_table_headers, tc_table_rows)
     caption("Table 7.1: Test Cases for 2D Composite Transformations")
-
-    sub_label("Relevant Implementation Code:")
-    body(
-        "The excerpt below shows how chronological transformations are compounded from right to left and then applied "
-        "once to each vertex. This keeps the composite operation consistent for pivot, fixed-point, axis, and sequence cases."
-    )
-    code_block("""
-def compose_transformations(*matrices):
-    if not matrices:
-        return mat3_identity()
-
-    result = matrices[0]
-    for matrix in matrices[1:]:
-        result = mat3_multiply(matrix, result)
-    return result
-
-def apply_composite_transformation(vertices, tc_type, params):
-    if tc_type == "pivot_rotation":
-        M = transform_about_point_matrix(
-            params["pivot_x"], params["pivot_y"],
-            angle_deg=params["angle_deg"])
-    elif tc_type == "axis_reflection":
-        M = transform_about_axis_matrix(
-            params["x1"], params["y1"], params["x2"], params["y2"])
-    elif tc_type == "fixed_point_scaling":
-        M = scale_about_point_matrix(
-            params["fixed_x"], params["fixed_y"],
-            params["sx"], params["sy"])
-    elif tc_type == "axis_scaling":
-        M = scale_along_axis_matrix(
-            params["x1"], params["y1"], params["x2"], params["y2"],
-            params["s_along"], params["s_perp"])
-    else:
-        M = composite_sequence_matrix(
-            params["tx"], params["ty"], params["pivot_x"],
-            params["pivot_y"], params["angle_deg"],
-            params["sx"], params["sy"])
-
-    transformed = [mat3_transform_point(M, x, y) for x, y in vertices]
-    return transformed, M
-""")
 
     for tc in TEST_CASES:
         sub_label(tc["label"])

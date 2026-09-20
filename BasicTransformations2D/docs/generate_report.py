@@ -250,10 +250,54 @@ def main():
     body("5. Render the Cartesian grid, axes, original shape (blue), and transformed shape (red) using OpenGL.")
 
     # ══════════════════════════════════════════════════════════════════════
-    # 6. Implementation & Test Cases
+    # 6. Implementation
     # ══════════════════════════════════════════════════════════════════════
-    section_label("Implementation & Test Cases:")
+    section_label("Implementation:")
 
+    body(
+        "The implementation represents every 2D point in homogeneous form and applies one 3x3 matrix for the selected "
+        "operation. Translation changes the final column, scaling changes the diagonal entries, and rotation is built "
+        "from the sine and cosine of the angle."
+    )
+    sub_label("Translation, Scaling, and Rotation Code:")
+    code_block("""
+def translation_matrix(tx, ty):
+    return [[1.0, 0.0, float(tx)],
+            [0.0, 1.0, float(ty)],
+            [0.0, 0.0, 1.0]]
+
+def scaling_matrix(sx, sy):
+    return [[float(sx), 0.0, 0.0],
+            [0.0, float(sy), 0.0],
+            [0.0, 0.0, 1.0]]
+
+def rotation_matrix(angle_deg):
+    theta = math.radians(angle_deg)
+    c, s = math.cos(theta), math.sin(theta)
+    return [[c, -s, 0.0],
+            [s, c, 0.0],
+            [0.0, 0.0, 1.0]]
+""")
+
+    sub_label("Applying the Selected Transformation:")
+    code_block("""
+def apply_transformation(vertices, transform_name, params):
+    if transform_name == "translation":
+        M = translation_matrix(params["tx"], params["ty"])
+    elif transform_name == "scaling":
+        M = scaling_matrix(params["sx"], params["sy"])
+    elif transform_name == "rotation":
+        M = rotation_matrix(params["angle_deg"])
+    else:
+        raise ValueError(f"Unknown transformation: {transform_name}")
+
+    transformed = [mat3_transform_point(M, x, y) for x, y in vertices]
+    return transformed, M
+""")
+
+    # 7. Test Cases
+    # ══════════════════════════════════════════════════════════════════════
+    section_label("Test Cases:")
     tc_table_headers = ["Test Case", "Original Vertices", "Transformation", "Parameters", "Transformed Vertices"]
     tc_table_rows = []
 
@@ -271,26 +315,6 @@ def main():
 
     add_table(tc_table_headers, tc_table_rows)
     caption("Table 6.1: Test Cases for 2D Basic Transformations")
-
-    sub_label("Relevant Implementation Code:")
-    body(
-        "The following excerpt constructs the selected homogeneous matrix and applies it to every polygon vertex. "
-        "The same function is used by the report generator and the interactive visualizer."
-    )
-    code_block("""
-def apply_transformation(vertices, transform_name, params):
-    if transform_name == "translation":
-        M = translation_matrix(params["tx"], params["ty"])
-    elif transform_name == "scaling":
-        M = scaling_matrix(params["sx"], params["sy"])
-    elif transform_name == "rotation":
-        M = rotation_matrix(params["angle_deg"])
-    else:
-        raise ValueError(f"Unknown transformation: {transform_name}")
-
-    transformed = [mat3_transform_point(M, x, y) for x, y in vertices]
-    return transformed, M
-""")
 
     # Images
     for tc in TEST_CASES:

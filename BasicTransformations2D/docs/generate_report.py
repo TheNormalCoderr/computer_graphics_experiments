@@ -101,6 +101,19 @@ def main():
             run.font.size = Pt(size)
         return p
 
+    def code_block(text):
+        p = doc.add_paragraph()
+        p.paragraph_format.left_indent = Inches(0.25)
+        p.paragraph_format.space_before = Pt(2)
+        p.paragraph_format.space_after = Pt(8)
+        for index, line in enumerate(text.strip("\n").splitlines()):
+            run = p.add_run(line)
+            run.font.name = "Courier New"
+            run.font.size = Pt(9)
+            if index < len(text.strip("\n").splitlines()) - 1:
+                run.add_break()
+        return p
+
     def bullet(text, level=0):
         p = doc.add_paragraph(style="List Bullet")
         p.paragraph_format.space_after = Pt(3)
@@ -258,6 +271,26 @@ def main():
 
     add_table(tc_table_headers, tc_table_rows)
     caption("Table 6.1: Test Cases for 2D Basic Transformations")
+
+    sub_label("Relevant Implementation Code:")
+    body(
+        "The following excerpt constructs the selected homogeneous matrix and applies it to every polygon vertex. "
+        "The same function is used by the report generator and the interactive visualizer."
+    )
+    code_block("""
+def apply_transformation(vertices, transform_name, params):
+    if transform_name == "translation":
+        M = translation_matrix(params["tx"], params["ty"])
+    elif transform_name == "scaling":
+        M = scaling_matrix(params["sx"], params["sy"])
+    elif transform_name == "rotation":
+        M = rotation_matrix(params["angle_deg"])
+    else:
+        raise ValueError(f"Unknown transformation: {transform_name}")
+
+    transformed = [mat3_transform_point(M, x, y) for x, y in vertices]
+    return transformed, M
+""")
 
     # Images
     for tc in TEST_CASES:

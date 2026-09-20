@@ -69,6 +69,20 @@ def main():
             run.font.size = Pt(size)
         return p
 
+    def code_block(text):
+        p = doc.add_paragraph()
+        p.paragraph_format.left_indent = Inches(0.25)
+        p.paragraph_format.space_before = Pt(2)
+        p.paragraph_format.space_after = Pt(8)
+        lines = text.strip("\n").splitlines()
+        for index, line in enumerate(lines):
+            run = p.add_run(line)
+            run.font.name = "Courier New"
+            run.font.size = Pt(9)
+            if index < len(lines) - 1:
+                run.add_break()
+        return p
+
     def bullet(text, level=0):
         p = doc.add_paragraph(style="List Bullet")
         p.paragraph_format.space_after = Pt(3)
@@ -227,6 +241,47 @@ def main():
 
     add_table(tc_table_headers, tc_table_rows)
     caption("Table 7.1: Test Cases for 2D Composite Transformations")
+
+    sub_label("Relevant Implementation Code:")
+    body(
+        "The excerpt below shows how chronological transformations are compounded from right to left and then applied "
+        "once to each vertex. This keeps the composite operation consistent for pivot, fixed-point, axis, and sequence cases."
+    )
+    code_block("""
+def compose_transformations(*matrices):
+    if not matrices:
+        return mat3_identity()
+
+    result = matrices[0]
+    for matrix in matrices[1:]:
+        result = mat3_multiply(matrix, result)
+    return result
+
+def apply_composite_transformation(vertices, tc_type, params):
+    if tc_type == "pivot_rotation":
+        M = transform_about_point_matrix(
+            params["pivot_x"], params["pivot_y"],
+            angle_deg=params["angle_deg"])
+    elif tc_type == "axis_reflection":
+        M = transform_about_axis_matrix(
+            params["x1"], params["y1"], params["x2"], params["y2"])
+    elif tc_type == "fixed_point_scaling":
+        M = scale_about_point_matrix(
+            params["fixed_x"], params["fixed_y"],
+            params["sx"], params["sy"])
+    elif tc_type == "axis_scaling":
+        M = scale_along_axis_matrix(
+            params["x1"], params["y1"], params["x2"], params["y2"],
+            params["s_along"], params["s_perp"])
+    else:
+        M = composite_sequence_matrix(
+            params["tx"], params["ty"], params["pivot_x"],
+            params["pivot_y"], params["angle_deg"],
+            params["sx"], params["sy"])
+
+    transformed = [mat3_transform_point(M, x, y) for x, y in vertices]
+    return transformed, M
+""")
 
     for tc in TEST_CASES:
         sub_label(tc["label"])

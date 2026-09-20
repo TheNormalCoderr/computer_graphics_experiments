@@ -23,9 +23,12 @@ from SymmetricDDA.src.symmetric_dda import symmetric_dda_points, unique_points  
 from Brestenham.src.bresenham import bresenham_points                                 #type:ignore
 from MidPointCircle.src.midpoint_circle import midpoint_circle_points                 #type:ignore
 from MidPointEllipse.src.midpoint_ellipse import midpoint_ellipse_points               #type:ignore
-from Transformations2D.src.transformations_2d import (                                 #type:ignore
+from BasicTransformations2D.src.basic_transformations import (                         #type:ignore
     translation_matrix, scaling_matrix, rotation_matrix, mat3_multiply,
     mat3_transform_point,
+)
+from CompositeTransformations2D.src.composite_transformations import (                 #type:ignore
+    compose_transformations, transform_about_point_matrix, transform_about_axis_matrix,
 )
 
 
@@ -1518,11 +1521,8 @@ def _safe_parse_transform_float(val, default):
 
 
 def _compose_transform_matrices(*matrices):
-    """Return the left-to-right product of 3×3 homogeneous matrices."""
-    result = matrices[0]
-    for matrix in matrices[1:]:
-        result = mat3_multiply(result, matrix)
-    return result
+    """Return the product of 3×3 homogeneous matrices."""
+    return compose_transformations(*matrices)
 
 
 def _confirm_transform():
@@ -1560,12 +1560,7 @@ def _confirm_transform():
             angle = _safe_parse_transform_float(TRANSFORM_DIALOG_FIELDS.get("angle"), 0.0)
             sx = _safe_parse_transform_float(TRANSFORM_DIALOG_FIELDS.get("sx"), 1.0)
             sy = _safe_parse_transform_float(TRANSFORM_DIALOG_FIELDS.get("sy"), 1.0)
-            M = _compose_transform_matrices(
-                translation_matrix(pivot_x, pivot_y),
-                rotation_matrix(angle),
-                scaling_matrix(sx, sy),
-                translation_matrix(-pivot_x, -pivot_y),
-            )
+            M = transform_about_point_matrix(pivot_x, pivot_y, angle_deg=angle, sx=sx, sy=sy)
             print(
                 "[Transform] About point "
                 f"({pivot_x}, {pivot_y}): rotate={angle}°, scale=({sx}, {sy})"
@@ -1581,16 +1576,7 @@ def _confirm_transform():
                 print("[Transform] Axis needs two different points.")
                 return
 
-            # Translate the axis to the origin, align it with X, reflect across X,
-            # then undo the rotation and translation.
-            axis_angle = math.degrees(math.atan2(dy, dx))
-            M = _compose_transform_matrices(
-                translation_matrix(x1, y1),
-                rotation_matrix(axis_angle),
-                scaling_matrix(1.0, -1.0),
-                rotation_matrix(-axis_angle),
-                translation_matrix(-x1, -y1),
-            )
+            M = transform_about_axis_matrix(x1, y1, x2, y2)
             print(f"[Transform] Reflection about axis through ({x1}, {y1}) and ({x2}, {y2})")
 
         else:

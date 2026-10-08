@@ -6,6 +6,7 @@ import struct
 import zlib
 import glob
 import copy
+import subprocess
 
 import OpenGL.GL as gl     #type:ignore
 import OpenGL.GLUT as glut #type:ignore
@@ -47,27 +48,33 @@ CURRENT_HEIGHT = DEFAULT_HEIGHT
 # Menu Configuration
 # ============================================================================
 
-MENU_HEIGHT = 60
-MENU_BUTTON_HEIGHT = 40
-MENU_BG_COLOR = (0.22, 0.22, 0.25)
-MENU_ITEM_COLOR = (0.35, 0.35, 0.38)
-MENU_TEXT_COLOR = (0.92, 0.92, 0.92)
-MENU_HOVER_COLOR = (0.40, 0.40, 0.45)
+MENU_HEIGHT = 68
+MENU_BUTTON_HEIGHT = 38
+
+# ── Studio Dark Theme ────────────────────────────────────────────────────────
+MENU_BG_COLOR = (0.065, 0.075, 0.098)       # Deep obsidian-navy header
+MENU_TOOLBAR_BG = (0.090, 0.105, 0.138)     # Secondary studio ribbon
+MENU_ITEM_COLOR = (0.13, 0.15, 0.20)        # Border/divider
+MENU_TEXT_COLOR = (0.88, 0.90, 0.95)        # Crisp white-slate text
+MENU_HOVER_COLOR = (0.16, 0.21, 0.30)       # Active item hover
+MENU_ACCENT_COLOR = (0.0, 0.82, 1.0)        # Radiant electric cyan
 
 MENU_LIST = [
-    "Line Drawing Algorithm",
+    "Algorithms",
     "Line Parameters",
     "Transformations",
+    "Canvas Scale",
     "Import File",
     "Options",
 ]
 
 # Dropdown configuration
-DROPDOWN_ITEM_HEIGHT = 30
-DROPDOWN_WIDTH = 200
-DROPDOWN_BG_COLOR = (0.20, 0.20, 0.23)
-DROPDOWN_HOVER_COLOR = (0.35, 0.35, 0.40)
-DROPDOWN_TEXT_COLOR = (0.90, 0.90, 0.90)
+DROPDOWN_ITEM_HEIGHT = 32
+DROPDOWN_WIDTH = 220
+DROPDOWN_BG_COLOR = (0.080, 0.095, 0.125)
+DROPDOWN_HOVER_COLOR = (0.16, 0.22, 0.32)
+DROPDOWN_TEXT_COLOR = (0.92, 0.93, 0.96)
+DROPDOWN_BORDER_COLOR = (0.22, 0.28, 0.38)
 
 ALGORITHM_ITEMS = [
     "Simple DDA",
@@ -75,6 +82,8 @@ ALGORITHM_ITEMS = [
     "Bresenham",
     "Mid Point Circle",
     "Mid Point Ellipse",
+    "Polygon Build",
+    "Filling Algorithms",
 ]
 
 LINE_PARAMETERS_ITEMS = [
@@ -104,6 +113,7 @@ WIDTH_ITEMS = [
 ]
 
 OPTIONS_ITEMS = [
+    "Select Mode (S)",
     "Undo (Ctrl+Z)",
     "Redo (Ctrl+Y)",
     "Clear",
@@ -125,10 +135,13 @@ BASIC_TRANSFORMATION_ITEMS = [
 COMPOSITE_TRANSFORMATION_ITEMS = [
     "About a Point",
     "About an Axis",
+    "Reflect About X-Axis",
+    "Reflect About Y-Axis",
+    "Multi Operation",
 ]
 
 MENU_DROPDOWN = {
-    "Line Drawing Algorithm": ALGORITHM_ITEMS,
+    "Algorithms": ALGORITHM_ITEMS,
     "Line Parameters": LINE_PARAMETERS_ITEMS,
     "Transformations": TRANSFORMATION_ITEMS,
     "Options": OPTIONS_ITEMS,
@@ -145,6 +158,117 @@ SUB_DROPDOWN = {
 # Currently opened menu / sub-menu
 OPEN_MENU = None
 OPEN_SUB_MENU = None
+
+# ── Shape Selection & Transform Pivot State ──────────────────────────────────
+SELECT_MODE = False                 # Selective cursor mode for shapes/polygons
+SELECTED_SHAPE_INDICES = set()      # Set of indices into drawn_lines currently selected
+SELECT_BOX_ACTIVE = False           # True when mouse is dragging a selection marquee
+SELECT_BOX_START = (0, 0)           # Starting window (x, y) for marquee box
+SELECT_BOX_CURRENT = (0, 0)         # Current window (x, y) for marquee box
+SELECT_BOX_DRAGGED = False          # True once mouse moved beyond drag threshold
+PICKING_PIVOT = False               # True when waiting for user to click pivot on canvas
+PICKING_AXIS_STEP = 0               # 0: not picking, 1: picking point 1, 2: picking point 2
+AXIS_FIRST_POINT = None             # First point (gx, gy) when picking axis
+CURRENT_PIVOT = None                # Active pivot (gx, gy) for transformations
+CURRENT_AXIS = None                 # Active axis ((x1,y1), (x2,y2)) for reflection
+PIVOT_TRANSFORM_TYPE = ""           # "Transform About a Point"
+
+# ── Canvas Scale / Zoom & Pan State ──────────────────────────────────────────
+CANVAS_SCALE = 1.0                  # Zoom factor (1.0 = 100%)
+CANVAS_SCALE_MIN = 0.2              # 20%
+CANVAS_SCALE_MAX = 8.0              # 800%
+CANVAS_OFFSET_X = 0.0               # Pan offset in grid units
+CANVAS_OFFSET_Y = 0.0               # Pan offset in grid units
+IS_PANNING = False                  # True during right/middle mouse drag
+IS_DRAGGING_SCALE_SLIDER = False     # True during scale slider thumb drag
+PAN_START_X = 0
+PAN_START_Y = 0
+PAN_START_OFFSET_X = 0.0
+PAN_START_OFFSET_Y = 0.0
+
+def _zoom_in(factor=1.25):
+    """Zoom in canvas by a multiplier factor."""
+    global CANVAS_SCALE
+    new_scale = min(CANVAS_SCALE_MAX, round(CANVAS_SCALE * factor, 3))
+    _set_scale(new_scale)
+
+def _zoom_out(factor=0.8):
+    """Zoom out canvas by a multiplier factor."""
+    global CANVAS_SCALE
+    new_scale = max(CANVAS_SCALE_MIN, round(CANVAS_SCALE * factor, 3))
+    _set_scale(new_scale)
+
+def _reset_scale():
+    """Reset canvas zoom to 100% and center origin."""
+    global CANVAS_SCALE, CANVAS_OFFSET_X, CANVAS_OFFSET_Y
+    CANVAS_SCALE = 1.0
+    CANVAS_OFFSET_X = 0.0
+    CANVAS_OFFSET_Y = 0.0
+    print("[Scale] Reset to 100% (1.0x). Canvas centered.")
+    glut.glutPostRedisplay()
+
+def _set_scale(scale_val):
+    """Set canvas scale directly, clamped to limits."""
+    global CANVAS_SCALE
+    CANVAS_SCALE = max(CANVAS_SCALE_MIN, min(CANVAS_SCALE_MAX, float(scale_val)))
+    print(f"[Scale] Canvas scale set to {CANVAS_SCALE * 100:.0f}% ({CANVAS_SCALE:.2f}x).")
+    glut.glutPostRedisplay()
+
+
+# ── Scale Slider Conversion Helpers ──────────────────────────────────────────
+
+def _get_scale_slider_bounds():
+    """
+    Return (panel_x, panel_y, panel_w, panel_h) for the Canvas Scale slider panel.
+    Aligned below the 'Canvas Scale' menu button.
+    """
+    menu_idx = MENU_LIST.index("Canvas Scale") if "Canvas Scale" in MENU_LIST else 3
+    menu_left, _ = get_menu_item_bounds_px(menu_idx)
+    panel_w = 260
+    panel_h = 100
+    panel_x = max(10, min(int(menu_left), CURRENT_WIDTH - panel_w - 10))
+    panel_y = MENU_BUTTON_HEIGHT
+    return panel_x, panel_y, panel_w, panel_h
+
+
+def _scale_to_slider_t(scale_val):
+    """
+    Convert canvas scale value (0.2 to 5.0) to slider fraction t in [0.0, 1.0].
+    Default 1.0x is placed right at the center: t = 0.5.
+    """
+    s = max(0.2, min(5.0, float(scale_val)))
+    if s <= 1.0:
+        t = (s - 0.25) / 1.5
+        return max(0.0, min(0.5, t))
+    else:
+        t = 0.5 + ((s - 1.0) / 8.0)
+        return max(0.5, min(1.0, t))
+
+
+def _slider_t_to_scale(t):
+    """
+    Convert slider fraction t in [0.0, 1.0] to canvas scale value.
+    Snaps smoothly to 1.0 (100%) within a small threshold.
+    """
+    t = max(0.0, min(1.0, float(t)))
+    if t <= 0.5:
+        s = 0.25 + (t / 0.5) * 0.75
+    else:
+        s = 1.0 + ((t - 0.5) / 0.5) * 4.0
+
+    if 0.95 <= s <= 1.05:
+        return 1.0
+    return round(s, 2)
+
+
+def _update_scale_from_slider_x(x):
+    """Update CANVAS_SCALE from horizontal mouse position on the slider track."""
+    panel_x, panel_y, panel_w, panel_h = _get_scale_slider_bounds()
+    track_x1 = panel_x + 18
+    track_x2 = panel_x + panel_w - 18
+    t = (x - track_x1) / float(track_x2 - track_x1)
+    new_scale = _slider_t_to_scale(t)
+    _set_scale(new_scale)
 
 # ── Save Dialog State ────────────────────────────────────────────────────────
 SAVE_DIALOG_OPEN = False
@@ -166,6 +290,8 @@ TRANSFORM_DIALOG_FIELDS = {}            # e.g. {"tx": "", "ty": ""}
 TRANSFORM_DIALOG_FIELD_ORDER = []       # ordered list of field names
 TRANSFORM_DIALOG_ACTIVE_FIELD = 0       # index into FIELD_ORDER for focused field
 TRANSFORM_DIALOG_CURSOR_BLINK = 0      # Frame counter for cursor blinking
+
+
 
 
 def hex_to_binary_pattern(val):
@@ -304,17 +430,20 @@ OUTPUT_DIR = os.path.join(APP_DIR, "output")
 # Canvas Configuration
 # ============================================================================
 
-CANVAS_BG_COLOR = (0.96, 0.96, 0.97, 1.0)
+CANVAS_BG_COLOR = (0.972, 0.980, 0.988, 1.0)
 
 GRID_SIZE = 1.5
-GRID_LINE_COLOR = (0.82, 0.82, 0.84)
+GRID_LINE_COLOR = (0.88, 0.89, 0.92)
+GRID_MAJOR_LINE_COLOR = (0.76, 0.78, 0.84)
 GRID_LINE_THICKNESS = 1
 
-ORIGIN_LINE_COLOR = (0.15, 0.15, 0.15)
+ORIGIN_X_COLOR = (0.0, 0.0, 0.0)
+ORIGIN_Y_COLOR = (0.0, 0.0, 0.0)
+ORIGIN_LINE_COLOR = (0.0, 0.0, 0.0)
 ORIGIN_LINE_THICKNESS = 2
 
 TICK_LABEL_COLOR = (0.4, 0.4, 0.4)
-POINT_MARKER_COLOR = (1.0, 0.3, 0.3)
+POINT_MARKER_COLOR = (0.95, 0.25, 0.35)
 POINT_MARKER_RADIUS = 4
 
 # ── Undo / Redo Configuration & State ─────────────────────────────────────────
@@ -332,25 +461,27 @@ def _save_undo_state():
 
 def _do_undo():
     """Revert to previous state."""
-    global drawn_lines, selected_points, undo_stack, redo_stack
+    global drawn_lines, selected_points, undo_stack, redo_stack, SELECTED_SHAPE_INDICES
     if not undo_stack:
         print("[Undo] Nothing to undo.")
         return
     redo_stack.append(copy.deepcopy(drawn_lines))
     drawn_lines = undo_stack.pop()
     selected_points = []
+    SELECTED_SHAPE_INDICES = {i for i in SELECTED_SHAPE_INDICES if i < len(drawn_lines)}
     print(f"[Undo] Reverted. {len(drawn_lines)} shape(s) on canvas. ({len(undo_stack)} undo(s) remaining)")
     glut.glutPostRedisplay()
 
 def _do_redo():
     """Re-apply previously undone state."""
-    global drawn_lines, selected_points, undo_stack, redo_stack
+    global drawn_lines, selected_points, undo_stack, redo_stack, SELECTED_SHAPE_INDICES
     if not redo_stack:
         print("[Redo] Nothing to redo.")
         return
     undo_stack.append(copy.deepcopy(drawn_lines))
     drawn_lines = redo_stack.pop()
     selected_points = []
+    SELECTED_SHAPE_INDICES = {i for i in SELECTED_SHAPE_INDICES if i < len(drawn_lines)}
     print(f"[Redo] Redone. {len(drawn_lines)} shape(s) on canvas. ({len(redo_stack)} redo(s) remaining)")
     glut.glutPostRedisplay()
 
@@ -428,6 +559,48 @@ def is_circle_algorithm(algorithm):
 def is_ellipse_algorithm(algorithm):
     """Return True if the algorithm is an ellipse-drawing algorithm."""
     return algorithm == "Mid Point Ellipse"
+
+
+def is_polygon_build(algorithm):
+    """Return True if the algorithm is the Polygon Build (smooth line) mode."""
+    return algorithm == "Polygon Build"
+
+
+# State for polygon building (smooth multi-vertex polygon)
+polygon_build_vertices = []  # List of (gx, gy) tuples during building
+
+
+def _finalize_polygon_build():
+    """
+    Finalize Polygon Build mode:
+    Creates a closed smooth polygon from polygon_build_vertices,
+    records undo history, adds the shape to drawn_lines, and clears building state.
+    """
+    global polygon_build_vertices, drawn_lines
+
+    if len(polygon_build_vertices) < 3:
+        print("[Polygon Build] At least 3 vertices are required to close polygon.")
+        return
+
+    _save_undo_state()
+
+    poly_entry = {
+        "type": "polygon",
+        "vertices": list(polygon_build_vertices),
+        "algorithm": "Polygon Build",
+        "color": CURRENT_COLOR,
+        "width": CURRENT_LINE_WIDTH,
+        "style": CURRENT_LINE_STYLE,
+        "pattern": CURRENT_USER_PATTERN if CURRENT_LINE_STYLE == "UserDefined" else "",
+        "smooth": True,
+    }
+
+    drawn_lines.append(poly_entry)
+    num_v = len(polygon_build_vertices)
+    polygon_build_vertices.clear()
+
+    print(f"[Polygon Build] Created smooth polygon with {num_v} vertices.")
+    glut.glutPostRedisplay()
 
 
 def compute_line_points(algorithm, x1, y1, x2, y2):
@@ -519,6 +692,35 @@ def keyboard(key, x, y):
     global SAVE_DIALOG_OPEN, SAVE_DIALOG_TEXT
     global PATTERN_DIALOG_OPEN, PATTERN_DIALOG_TEXT
     global TRANSFORM_DIALOG_OPEN, TRANSFORM_DIALOG_FIELDS, TRANSFORM_DIALOG_ACTIVE_FIELD
+    global SELECT_MODE, SELECTED_SHAPE_INDICES
+    global SELECT_BOX_ACTIVE, SELECT_BOX_DRAGGED
+    global PICKING_PIVOT, PICKING_AXIS_STEP, AXIS_FIRST_POINT, PIVOT_TRANSFORM_TYPE
+    global OPEN_MENU, OPEN_SUB_MENU, IS_DRAGGING_SCALE_SLIDER
+
+    # ── If in pivot picking mode, handle Esc / Enter ────────────────────
+    if PICKING_PIVOT:
+        if key == b'\x1b':
+            PICKING_PIVOT = False
+            print("[Composite] Pivot picking cancelled.")
+            glut.glutPostRedisplay()
+            return
+        elif key in (b'\r', b'\n'):
+            PICKING_PIVOT = False
+            _open_transform_dialog(PIVOT_TRANSFORM_TYPE, pivot=(0, 0))
+            return
+
+    # ── If in axis picking mode, handle Esc / Enter ─────────────────────
+    if PICKING_AXIS_STEP > 0:
+        if key == b'\x1b':
+            PICKING_AXIS_STEP = 0
+            AXIS_FIRST_POINT = None
+            print("[Composite] Axis picking cancelled.")
+            glut.glutPostRedisplay()
+            return
+        elif key in (b'\r', b'\n'):
+            PICKING_AXIS_STEP = 0
+            _open_transform_dialog("Transform About an Axis", axis=((0, 0), (1, 0)))
+            return
 
     # ── If transform dialog is open, route all keys to it ────────────────
     if TRANSFORM_DIALOG_OPEN:
@@ -547,6 +749,12 @@ def keyboard(key, x, y):
             ch = key.decode('ascii', errors='ignore')
             field_name = TRANSFORM_DIALOG_FIELD_ORDER[TRANSFORM_DIALOG_ACTIVE_FIELD]
             current_val = TRANSFORM_DIALOG_FIELDS.get(field_name, "")
+            if TRANSFORM_DIALOG_TYPE == "Multi Operation":
+                if ch and ch.isprintable() and len(current_val) < 80:
+                    TRANSFORM_DIALOG_FIELDS[field_name] += ch
+                    glut.glutPostRedisplay()
+                return
+
             if ch == '-':
                 # Toggle minus sign at the front of current value
                 if current_val.startswith('-'):
@@ -615,8 +823,70 @@ def keyboard(key, x, y):
                 glut.glutPostRedisplay()
             return
 
+
+    # Canvas Zoom Hotkeys: '+' / '=' (Zoom In), '-' / '_' (Zoom Out), '0' (Reset)
+    if key in (b'+', b'='):
+        _zoom_in()
+        return
+    if key in (b'-', b'_'):
+        _zoom_out()
+        return
+    if key == b'0':
+        _reset_scale()
+        return
+
+    # Enter / Return key — finalize Polygon Build
+    if key in (b'\r', b'\n'):
+        if is_polygon_build(CURRENT_ALGORITHM) and len(polygon_build_vertices) >= 3:
+            _finalize_polygon_build()
+            return
+        elif is_polygon_build(CURRENT_ALGORITHM) and len(polygon_build_vertices) > 0:
+            print("[Polygon Build] Need at least 3 vertices to close polygon.")
+            return
+
+    # 's' or 'S' — Toggle Select Mode
+    if key in (b's', b'S'):
+        SELECT_MODE = not SELECT_MODE
+        mode_str = "ENABLED" if SELECT_MODE else "DISABLED"
+        print(f"[Select] Selective cursor mode {mode_str}. (Press 'S' to toggle)")
+        glut.glutPostRedisplay()
+        return
+
+    # 'a' or 'A' or Ctrl+A (b'\x01') — Select All when Select Mode is active
+    if SELECT_MODE and key in (b'a', b'A', b'\x01'):
+        if drawn_lines:
+            SELECTED_SHAPE_INDICES = set(range(len(drawn_lines)))
+            summary = _get_selection_summary()
+            print(f"[Select] Selected all shapes/polygons on canvas ({summary}).")
+        else:
+            print("[Select] No shapes on canvas to select.")
+        glut.glutPostRedisplay()
+        return
+
     # Escape key
     if key == b'\x1b':
+        IS_DRAGGING_SCALE_SLIDER = False
+        if SELECT_BOX_ACTIVE:
+            SELECT_BOX_ACTIVE = False
+            SELECT_BOX_DRAGGED = False
+            glut.glutPostRedisplay()
+            return
+        # Cancel polygon build if in progress
+        if is_polygon_build(CURRENT_ALGORITHM) and polygon_build_vertices:
+            polygon_build_vertices.clear()
+            print("[Polygon Build] Cancelled. Vertices cleared.")
+            glut.glutPostRedisplay()
+            return
+        if OPEN_MENU is not None:
+            OPEN_MENU = None
+            OPEN_SUB_MENU = None
+            glut.glutPostRedisplay()
+            return
+        if SELECTED_SHAPE_INDICES:
+            SELECTED_SHAPE_INDICES.clear()
+            print("[Select] Deselected shapes.")
+            glut.glutPostRedisplay()
+            return
         os._exit(0)
 
     # Undo: Ctrl+Z (b'\x1a') or 'u' / 'U'
@@ -628,6 +898,7 @@ def keyboard(key, x, y):
     if key in (b'\x19', b'r', b'R'):
         _do_redo()
         return
+
 
     # 'p' — save screenshot to output/
     if key in (b'p', b'P'):
@@ -715,6 +986,19 @@ def _refresh_import_list():
             import_file_list.append(os.path.basename(f))
 
 
+def _open_filling_algorithms_window():
+    """Launch the interactive Filling Algorithms window in an independent process."""
+    script_path = os.path.join(SCRIPT_DIR, "filling_window.py")
+    if os.path.exists(script_path):
+        print(f"[Algorithms] Launching Filling Algorithms window ({script_path})...")
+        try:
+            subprocess.Popen([sys.executable, script_path])
+        except Exception as e:
+            print(f"[Error] Failed to launch filling window: {e}")
+    else:
+        print(f"[Error] Filling window script not found at {script_path}")
+
+
 def handle_dropdown_click(x, y):
     """
     Handle clicks on open dropdown menus.
@@ -724,9 +1008,14 @@ def handle_dropdown_click(x, y):
 
     global OPEN_MENU, OPEN_SUB_MENU
     global CURRENT_ALGORITHM, CURRENT_COLOR, CURRENT_LINE_WIDTH, CURRENT_LINE_STYLE
+    global SELECT_MODE, PICKING_PIVOT, PICKING_AXIS_STEP, AXIS_FIRST_POINT, PIVOT_TRANSFORM_TYPE, TRANSFORM_DIALOG_OPEN
 
     if OPEN_MENU is None:
         return False
+
+    # ── Canvas Scale: route to dedicated Slider Panel click handler ───────────
+    if OPEN_MENU == "Canvas Scale":
+        return _handle_scale_slider_click(x, y)
 
     # Find which menu item the dropdown belongs to
     menu_index = None
@@ -791,11 +1080,22 @@ def handle_dropdown_click(x, y):
                         if OPEN_SUB_MENU == "Basic Transformations":
                             _open_transform_dialog(sub_clicked)
                         elif OPEN_SUB_MENU == "Composite Transformations":
-                            composite_types = {
-                                "About a Point": "Transform About a Point",
-                                "About an Axis": "Transform About an Axis",
-                            }
-                            _open_transform_dialog(composite_types[sub_clicked])
+                            if sub_clicked == "About a Point":
+                                PICKING_PIVOT = True
+                                PIVOT_TRANSFORM_TYPE = "Transform About a Point"
+                                TRANSFORM_DIALOG_OPEN = False
+                                print("[Composite] Pivot selection active: Click any point on canvas to set pivot (or press Enter for (0,0)).")
+                            elif sub_clicked == "About an Axis":
+                                PICKING_AXIS_STEP = 1
+                                AXIS_FIRST_POINT = None
+                                TRANSFORM_DIALOG_OPEN = False
+                                print("[Composite] Axis selection active: Click 1st point for reflection axis on canvas.")
+                            elif sub_clicked == "Reflect About X-Axis":
+                                _apply_direct_reflection("x")
+                            elif sub_clicked == "Reflect About Y-Axis":
+                                _apply_direct_reflection("y")
+                            elif sub_clicked == "Multi Operation":
+                                _open_transform_dialog("Multi Operation")
 
                     OPEN_MENU = None
                     OPEN_SUB_MENU = None
@@ -811,9 +1111,12 @@ def handle_dropdown_click(x, y):
             clicked_item = dropdown_items[item_index]
 
             # Handle based on which menu we're in
-            if OPEN_MENU == "Line Drawing Algorithm":
-                CURRENT_ALGORITHM = clicked_item
-                print(f"[Algorithm] Selected: {CURRENT_ALGORITHM}")
+            if OPEN_MENU == "Algorithms":
+                if clicked_item == "Filling Algorithms":
+                    _open_filling_algorithms_window()
+                else:
+                    CURRENT_ALGORITHM = clicked_item
+                    print(f"[Algorithm] Selected: {CURRENT_ALGORITHM}")
                 OPEN_MENU = None
                 OPEN_SUB_MENU = None
 
@@ -845,7 +1148,13 @@ def handle_dropdown_click(x, y):
                     OPEN_SUB_MENU = None
 
             elif OPEN_MENU == "Options":
-                if "Undo" in clicked_item:
+                if "Select Mode" in clicked_item:
+                    SELECT_MODE = not SELECT_MODE
+                    mode_str = "ENABLED" if SELECT_MODE else "DISABLED"
+                    print(f"[Select] Selective cursor mode {mode_str}.")
+                    OPEN_MENU = None
+                    OPEN_SUB_MENU = None
+                elif "Undo" in clicked_item:
                     _do_undo()
                     OPEN_MENU = None
                     OPEN_SUB_MENU = None
@@ -866,8 +1175,15 @@ def handle_dropdown_click(x, y):
                     os._exit(0)
 
             elif OPEN_MENU == "Transformations":
-                if clicked_item in SUB_DROPDOWN:
+                if "Select" in clicked_item:
+                    SELECT_MODE = not SELECT_MODE
+                    mode_str = "ENABLED" if SELECT_MODE else "DISABLED"
+                    print(f"[Select] Selective cursor mode {mode_str}.")
+                    OPEN_MENU = None
+                    OPEN_SUB_MENU = None
+                elif clicked_item in SUB_DROPDOWN:
                     OPEN_SUB_MENU = None if OPEN_SUB_MENU == clicked_item else clicked_item
+
 
             elif OPEN_MENU == "Import File":
                 if clicked_item != "(no saved files)":
@@ -902,7 +1218,7 @@ def _get_pixel_ratio():
 
 def _get_all_endpoints():
     """
-    Collect every connectable endpoint from drawn_lines.
+    Collect every connectable endpoint from drawn_lines and active polygon build.
     Returns a list of (gx, gy) tuples (grid coordinates).
     """
     endpoints = []
@@ -911,6 +1227,8 @@ def _get_all_endpoints():
         if stype == "line":
             endpoints.append(shape["p1"])
             endpoints.append(shape["p2"])
+        elif stype == "polygon":
+            endpoints.extend(shape.get("vertices", []))
         elif stype == "circle":
             endpoints.append(shape["center"])
             endpoints.append(shape["radius_point"])
@@ -918,6 +1236,8 @@ def _get_all_endpoints():
             endpoints.append(shape["center"])
             endpoints.append(shape["rx_point"])
             endpoints.append(shape["ry_point"])
+    if is_polygon_build(CURRENT_ALGORITHM) and polygon_build_vertices:
+        endpoints.extend(polygon_build_vertices)
     return endpoints
 
 
@@ -933,8 +1253,8 @@ def _snap_to_nearest_endpoint(gx, gy, pixel_threshold=None):
     best_dist = float('inf')
     best_pt = (gx, gy)
     for (ex, ey) in endpoints:
-        dx = (gx - ex) * GRID_SIZE
-        dy = (gy - ey) * GRID_SIZE
+        dx = (gx - ex) * GRID_SIZE * CANVAS_SCALE
+        dy = (gy - ey) * GRID_SIZE * CANVAS_SCALE
         d = math.sqrt(dx * dx + dy * dy)
         if d < best_dist:
             best_dist = d
@@ -942,6 +1262,340 @@ def _snap_to_nearest_endpoint(gx, gy, pixel_threshold=None):
     if best_dist <= pixel_threshold:
         return best_pt, True
     return (gx, gy), False
+
+
+def _points_connect(pt1, pt2, tol=1.5):
+    """Check if two grid points are within connection tolerance."""
+    dx = pt1[0] - pt2[0]
+    dy = pt1[1] - pt2[1]
+    return (dx * dx + dy * dy) <= (tol * tol)
+
+
+def _find_connected_lines(start_idx):
+    """Find all line shapes connected endpoint-to-endpoint forming a polygon/polyline."""
+    if start_idx < 0 or start_idx >= len(drawn_lines):
+        return set()
+    if drawn_lines[start_idx].get("type", "line") != "line":
+        return {start_idx}
+
+    visited = {start_idx}
+    queue = [start_idx]
+
+    while queue:
+        curr = queue.pop(0)
+        curr_shape = drawn_lines[curr]
+        if curr_shape.get("type", "line") != "line":
+            continue
+        cp1 = curr_shape["p1"]
+        cp2 = curr_shape["p2"]
+
+        for other_idx, other_shape in enumerate(drawn_lines):
+            if other_idx in visited:
+                continue
+            if other_shape.get("type", "line") != "line":
+                continue
+            op1 = other_shape["p1"]
+            op2 = other_shape["p2"]
+
+            if (_points_connect(cp1, op1) or _points_connect(cp1, op2) or
+                _points_connect(cp2, op1) or _points_connect(cp2, op2)):
+                visited.add(other_idx)
+                queue.append(other_idx)
+
+    return visited
+
+
+def _point_in_polygon_segments(gx, gy, line_indices):
+    """Ray casting to check if (gx, gy) is inside a closed polygon formed by lines."""
+    crossings = 0
+    for idx in line_indices:
+        shape = drawn_lines[idx]
+        if shape.get("type", "line") != "line":
+            continue
+        x1, y1 = shape["p1"]
+        x2, y2 = shape["p2"]
+        if y1 > y2:
+            x1, y1, x2, y2 = x2, y2, x1, y1
+        if y1 <= gy < y2:
+            dy = y2 - y1
+            if dy != 0:
+                x_intersect = x1 + (gy - y1) * (x2 - x1) / dy
+                if x_intersect > gx:
+                    crossings += 1
+    return (crossings % 2) == 1
+
+
+def _dist_point_to_segment(px, py, x1, y1, x2, y2):
+    """Distance in grid units from point (px, py) to segment (x1, y1)-(x2, y2)."""
+    dx = x2 - x1
+    dy = y2 - y1
+    L2 = dx * dx + dy * dy
+    if L2 < 1e-6:
+        return math.sqrt((px - x1)**2 + (py - y1)**2)
+    t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / L2))
+    proj_x = x1 + t * dx
+    proj_y = y1 + t * dy
+    return math.sqrt((px - proj_x)**2 + (py - proj_y)**2)
+
+
+def _point_in_polygon(px, py, vertices):
+    """Ray casting algorithm to determine if grid point (px, py) is inside a polygon."""
+    n = len(vertices)
+    if n < 3:
+        return False
+    inside = False
+    p1x, p1y = vertices[0]
+    for i in range(n + 1):
+        p2x, p2y = vertices[i % n]
+        if py > min(p1y, p2y):
+            if py <= max(p1y, p2y):
+                if px <= max(p1x, p2x):
+                    if p1y != p2y:
+                        xinters = (py - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                    if p1x == p2x or px <= xinters:
+                        inside = not inside
+        p1x, p1y = p2x, p2y
+    return inside
+
+
+def _hit_test_shape(gx, gy, pixel_threshold=16.0):
+    """
+    Hit-test against all shapes on the canvas.
+    Returns (set_of_indices, is_polygon).
+    If a line belonging to a polygon or polyline is hit, returns all connected line indices.
+    """
+    if not drawn_lines:
+        return set(), False
+
+    # 1. Check if (gx, gy) is inside any polygon shape or closed polygon formed by connected lines
+    for idx, shape in enumerate(drawn_lines):
+        if shape.get("type") == "polygon":
+            verts = shape.get("vertices", [])
+            if len(verts) >= 3 and _point_in_polygon(gx, gy, verts):
+                return {idx}, True
+
+    visited_lines = set()
+    for idx, shape in enumerate(drawn_lines):
+        if shape.get("type", "line") == "line" and idx not in visited_lines:
+            comp = _find_connected_lines(idx)
+            visited_lines.update(comp)
+            if len(comp) >= 3:
+                if _point_in_polygon_segments(gx, gy, comp):
+                    return comp, True
+
+    # 2. Check proximity to shape boundaries
+    best_dist_px = float('inf')
+    best_shape_idx = None
+
+    for idx, shape in enumerate(drawn_lines):
+        stype = shape.get("type", "line")
+        if stype == "line":
+            p1 = shape["p1"]
+            p2 = shape["p2"]
+            d_grid = _dist_point_to_segment(gx, gy, p1[0], p1[1], p2[0], p2[1])
+            d_px = d_grid * GRID_SIZE * CANVAS_SCALE
+            if d_px < best_dist_px:
+                best_dist_px = d_px
+                best_shape_idx = idx
+
+        elif stype == "polygon":
+            verts = shape.get("vertices", [])
+            n = len(verts)
+            for i in range(n):
+                p1 = verts[i]
+                p2 = verts[(i + 1) % n]
+                d_grid = _dist_point_to_segment(gx, gy, p1[0], p1[1], p2[0], p2[1])
+                d_px = d_grid * GRID_SIZE * CANVAS_SCALE
+                if d_px < best_dist_px:
+                    best_dist_px = d_px
+                    best_shape_idx = idx
+
+        elif stype == "circle":
+            c = shape["center"]
+            r = shape["radius"]
+            dx = gx - c[0]
+            dy = gy - c[1]
+            dist_c = math.sqrt(dx * dx + dy * dy)
+            if dist_c <= r:
+                d_px = 0.0
+            else:
+                d_px = (dist_c - r) * GRID_SIZE * CANVAS_SCALE
+            if d_px < best_dist_px:
+                best_dist_px = d_px
+                best_shape_idx = idx
+
+        elif stype == "ellipse":
+            c = shape["center"]
+            rx = shape.get("rx", 1)
+            ry = shape.get("ry", 1)
+            angle = shape.get("angle", 0.0)
+            dx = gx - c[0]
+            dy = gy - c[1]
+            cos_a = math.cos(-angle)
+            sin_a = math.sin(-angle)
+            u = dx * cos_a - dy * sin_a
+            v = dx * sin_a + dy * cos_a
+            norm_r = math.sqrt((u / max(1, rx))**2 + (v / max(1, ry))**2)
+            if norm_r <= 1.0:
+                d_px = 0.0
+            else:
+                d_px = (norm_r - 1.0) * min(rx, ry) * GRID_SIZE * CANVAS_SCALE
+            if d_px < best_dist_px:
+                best_dist_px = d_px
+                best_shape_idx = idx
+
+    if best_dist_px <= pixel_threshold and best_shape_idx is not None:
+        shape = drawn_lines[best_shape_idx]
+        if shape.get("type", "line") == "line":
+            comp = _find_connected_lines(best_shape_idx)
+            return comp, (len(comp) > 1)
+        elif shape.get("type") == "polygon":
+            return {best_shape_idx}, True
+        return {best_shape_idx}, False
+
+    return set(), False
+
+
+def _screen_to_grid(sx, sy):
+    """Convert screen coordinates (window pixels) to continuous grid coordinates."""
+    canvas_height = CURRENT_HEIGHT - MENU_HEIGHT
+    x_world = ((sx - CURRENT_WIDTH / 2.0) / CANVAS_SCALE) + (CANVAS_OFFSET_X * GRID_SIZE)
+    y_world = (((CURRENT_HEIGHT - sy) - canvas_height / 2.0) / CANVAS_SCALE) + (CANVAS_OFFSET_Y * GRID_SIZE)
+    gx = x_world / GRID_SIZE
+    gy = y_world / GRID_SIZE
+    return gx, gy
+
+
+def _ccw(A, B, C):
+    return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
+
+
+def _segments_intersect(A, B, C, D):
+    return (_ccw(A, C, D) != _ccw(B, C, D)) and (_ccw(A, B, C) != _ccw(A, B, D))
+
+
+def _point_in_box(px, py, min_x, min_y, max_x, max_y):
+    return min_x <= px <= max_x and min_y <= py <= max_y
+
+
+def _segment_intersects_box(p1, p2, min_x, min_y, max_x, max_y):
+    if _point_in_box(p1[0], p1[1], min_x, min_y, max_x, max_y) or _point_in_box(p2[0], p2[1], min_x, min_y, max_x, max_y):
+        return True
+    b1 = (min_x, min_y)
+    b2 = (max_x, min_y)
+    b3 = (max_x, max_y)
+    b4 = (min_x, max_y)
+    return (_segments_intersect(p1, p2, b1, b2) or
+            _segments_intersect(p1, p2, b2, b3) or
+            _segments_intersect(p1, p2, b3, b4) or
+            _segments_intersect(p1, p2, b4, b1))
+
+
+def _find_shapes_in_box(min_gx, min_gy, max_gx, max_gy):
+    """
+    Find all shape indices in drawn_lines that fall inside or intersect
+    the bounding box [min_gx, max_gx] x [min_gy, max_gy] (in grid coords).
+    If a line belonging to a polyline/polygon is hit, includes all connected lines.
+    """
+    hit_indices = set()
+    b_center = ((min_gx + max_gx) / 2.0, (min_gy + max_gy) / 2.0)
+
+    for idx, shape in enumerate(drawn_lines):
+        stype = shape.get("type", "line")
+        if stype == "polygon":
+            verts = shape.get("vertices", [])
+            if not verts:
+                continue
+            # 1. Any vertex inside box?
+            if any(_point_in_box(vx, vy, min_gx, min_gy, max_gx, max_gy) for vx, vy in verts):
+                hit_indices.add(idx)
+                continue
+            # 2. Any edge intersects box?
+            n = len(verts)
+            hit = False
+            for i in range(n):
+                if _segment_intersects_box(verts[i], verts[(i + 1) % n], min_gx, min_gy, max_gx, max_gy):
+                    hit_indices.add(idx)
+                    hit = True
+                    break
+            if hit:
+                continue
+            # 3. Box completely inside polygon?
+            if len(verts) >= 3 and _point_in_polygon(b_center[0], b_center[1], verts):
+                hit_indices.add(idx)
+
+        elif stype == "line":
+            p1 = shape["p1"]
+            p2 = shape["p2"]
+            if _segment_intersects_box(p1, p2, min_gx, min_gy, max_gx, max_gy):
+                comp = _find_connected_lines(idx)
+                hit_indices.update(comp)
+
+        elif stype == "circle":
+            c = shape["center"]
+            r = shape["radius"]
+            cx_c = max(min_gx, min(c[0], max_gx))
+            cy_c = max(min_gy, min(c[1], max_gy))
+            dx = c[0] - cx_c
+            dy = c[1] - cy_c
+            if (dx * dx + dy * dy) <= (r * r):
+                hit_indices.add(idx)
+
+        elif stype == "ellipse":
+            c = shape["center"]
+            max_r = max(shape.get("rx", 1), shape.get("ry", 1))
+            cx_c = max(min_gx, min(c[0], max_gx))
+            cy_c = max(min_gy, min(c[1], max_gy))
+            dx = c[0] - cx_c
+            dy = c[1] - cy_c
+            if (dx * dx + dy * dy) <= (max_r * max_r):
+                hit_indices.add(idx)
+
+    return hit_indices
+
+
+def _get_selection_summary():
+    """Return a human-readable summary of selected shapes/polygons."""
+    if not SELECTED_SHAPE_INDICES:
+        return "0 selected"
+    valid = [i for i in SELECTED_SHAPE_INDICES if 0 <= i < len(drawn_lines)]
+    if not valid:
+        return "0 selected"
+
+    visited_lines = set()
+    poly_count = 0
+    line_count = 0
+    circle_count = 0
+    ellipse_count = 0
+
+    for idx in valid:
+        shape = drawn_lines[idx]
+        stype = shape.get("type", "line")
+        if stype == "polygon":
+            poly_count += 1
+        elif stype == "circle":
+            circle_count += 1
+        elif stype == "ellipse":
+            ellipse_count += 1
+        elif stype == "line":
+            if idx not in visited_lines:
+                comp = _find_connected_lines(idx)
+                visited_lines.update(comp)
+                if len(comp) > 1:
+                    poly_count += 1
+                else:
+                    line_count += 1
+
+    parts = []
+    if poly_count > 0:
+        parts.append(f"{poly_count} polygon{'s' if poly_count > 1 else ''}")
+    if circle_count > 0:
+        parts.append(f"{circle_count} circle{'s' if circle_count > 1 else ''}")
+    if ellipse_count > 0:
+        parts.append(f"{ellipse_count} ellipse{'s' if ellipse_count > 1 else ''}")
+    if line_count > 0:
+        parts.append(f"{line_count} line{'s' if line_count > 1 else ''}")
+    return ", ".join(parts) if parts else f"{len(valid)} shape(s)"
 
 
 def handle_canvas_click(x, y):
@@ -952,25 +1606,16 @@ def handle_canvas_click(x, y):
     and snaps to the nearest grid intersection.
     """
 
-    global selected_points
+    global selected_points, SELECT_MODE, SELECTED_SHAPE_INDICES
+    global PICKING_PIVOT, CURRENT_PIVOT, PIVOT_TRANSFORM_TYPE
+    global PICKING_AXIS_STEP, AXIS_FIRST_POINT, CURRENT_AXIS
 
     # Convert window coordinates to Cartesian coordinates.
     # GLUT y is top-down, canvas starts below menu.
-    #
-    # The canvas viewport is: glViewport(0, 0, canvas_width, canvas_height)
-    # which occupies the bottom canvas_height pixels of the window.
-    #
-    # GLUT gives mouse coords with origin at top-left.
-    # OpenGL viewport has origin at bottom-left.
-    #
-    # viewport_y = CURRENT_HEIGHT - y  (convert top-down to bottom-up)
-    # Cartesian:  x_world = x - CURRENT_WIDTH / 2
-    #             y_world = viewport_y - canvas_height / 2
-
     canvas_height = CURRENT_HEIGHT - MENU_HEIGHT
 
-    x_world = x - CURRENT_WIDTH / 2.0
-    y_world = (CURRENT_HEIGHT - y) - canvas_height / 2.0
+    x_world = ((x - CURRENT_WIDTH / 2.0) / CANVAS_SCALE) + (CANVAS_OFFSET_X * GRID_SIZE)
+    y_world = (((CURRENT_HEIGHT - y) - canvas_height / 2.0) / CANVAS_SCALE) + (CANVAS_OFFSET_Y * GRID_SIZE)
 
     # Snap to nearest grid intersection using proper rounding
     gx = int(round_half_up(x_world / GRID_SIZE))
@@ -983,7 +1628,76 @@ def handle_canvas_click(x, y):
 
     print(f"[Click] Mouse: ({x}, {y}) → World: ({x_world:.1f}, {y_world:.1f}) → Grid: ({gx}, {gy})")
 
+    # ── Handle Pivot Picking ─────────────────────────────────────────────
+    if PICKING_PIVOT:
+        CURRENT_PIVOT = (gx, gy)
+        PICKING_PIVOT = False
+        print(f"[Composite] Pivot point selected on canvas: ({gx}, {gy})")
+        _open_transform_dialog(PIVOT_TRANSFORM_TYPE, pivot=(gx, gy))
+        glut.glutPostRedisplay()
+        return
+
+    # ── Handle Axis Picking ──────────────────────────────────────────────
+    if PICKING_AXIS_STEP == 1:
+        AXIS_FIRST_POINT = (gx, gy)
+        PICKING_AXIS_STEP = 2
+        print(f"[Composite] Axis point 1 set to ({gx}, {gy}). Click second point on canvas.")
+        glut.glutPostRedisplay()
+        return
+    elif PICKING_AXIS_STEP == 2:
+        p1 = AXIS_FIRST_POINT
+        p2 = (gx, gy)
+        PICKING_AXIS_STEP = 0
+        AXIS_FIRST_POINT = None
+        CURRENT_AXIS = (p1, p2)
+        print(f"[Composite] Axis set to ({p1}) -> ({p2}). Opening parameters dialog.")
+        _open_transform_dialog("Transform About an Axis", axis=(p1, p2))
+        glut.glutPostRedisplay()
+        return
+
+    # ── Handle Select Mode ───────────────────────────────────────────────
+    if SELECT_MODE:
+        hit_indices, is_poly = _hit_test_shape(gx, gy)
+        if hit_indices:
+            if hit_indices.issubset(SELECTED_SHAPE_INDICES):
+                # Deselect / toggle off this polygon/shape
+                SELECTED_SHAPE_INDICES.difference_update(hit_indices)
+                summary = _get_selection_summary()
+                print(f"[Select] Deselected shape/polygon. Now selected: {summary}.")
+            else:
+                # Add to selection (multi-select)
+                SELECTED_SHAPE_INDICES.update(hit_indices)
+                summary = _get_selection_summary()
+                print(f"[Select] Selected shape/polygon. Now selected: {summary}.")
+        else:
+            SELECTED_SHAPE_INDICES.clear()
+            print("[Select] Clicked empty canvas. Selection cleared.")
+        glut.glutPostRedisplay()
+        return
+
+    # ── Polygon Build Mode ────────────────────────────────────────────────
+    if is_polygon_build(CURRENT_ALGORITHM):
+        global polygon_build_vertices
+        if len(polygon_build_vertices) >= 3:
+            first_v = polygon_build_vertices[0]
+            dx = (gx - first_v[0]) * GRID_SIZE * CANVAS_SCALE
+            dy = (gy - first_v[1]) * GRID_SIZE * CANVAS_SCALE
+            if math.sqrt(dx * dx + dy * dy) <= SNAP_DISTANCE_PIXELS:
+                _finalize_polygon_build()
+                return
+
+        polygon_build_vertices.append((gx, gy))
+        n = len(polygon_build_vertices)
+        if n == 1:
+            print(f"[Polygon Build] First vertex at ({gx}, {gy}). Click more points. Press Enter or click start to close polygon, Esc to cancel.")
+        else:
+            prev = polygon_build_vertices[-2]
+            print(f"[Polygon Build] Vertex {n} at ({gx}, {gy}) — edge from ({prev[0]},{prev[1]}). Press Enter or click start to close polygon.")
+        glut.glutPostRedisplay()
+        return
+
     selected_points.append((gx, gy))
+
 
     if is_ellipse_algorithm(CURRENT_ALGORITHM):
         # Ellipse mode: 3 clicks — centre, rx point, ry point (orthogonal)
@@ -1153,8 +1867,8 @@ def passive_motion(x, y):
         return
         
     canvas_height = CURRENT_HEIGHT - MENU_HEIGHT
-    x_world = x - CURRENT_WIDTH / 2.0
-    y_world = (CURRENT_HEIGHT - y) - canvas_height / 2.0
+    x_world = ((x - CURRENT_WIDTH / 2.0) / CANVAS_SCALE) + (CANVAS_OFFSET_X * GRID_SIZE)
+    y_world = (((CURRENT_HEIGHT - y) - canvas_height / 2.0) / CANVAS_SCALE) + (CANVAS_OFFSET_Y * GRID_SIZE)
 
     gx = int(round_half_up(x_world / GRID_SIZE))
     gy = int(round_half_up(y_world / GRID_SIZE))
@@ -1167,16 +1881,112 @@ def passive_motion(x, y):
         glut.glutPostRedisplay()
 
 
+def motion(x, y):
+    """Handle active mouse drag for canvas panning, scale slider, or marquee selection."""
+    global CANVAS_OFFSET_X, CANVAS_OFFSET_Y, IS_PANNING, IS_DRAGGING_SCALE_SLIDER
+    global SELECT_BOX_ACTIVE, SELECT_BOX_CURRENT, SELECT_BOX_DRAGGED, SELECT_BOX_START
+    if IS_DRAGGING_SCALE_SLIDER:
+        _update_scale_from_slider_x(x)
+        glut.glutPostRedisplay()
+        return
+
+    if SELECT_BOX_ACTIVE:
+        dx = abs(x - SELECT_BOX_START[0])
+        dy = abs(y - SELECT_BOX_START[1])
+        if dx > 4 or dy > 4:
+            SELECT_BOX_DRAGGED = True
+        SELECT_BOX_CURRENT = (x, y)
+        glut.glutPostRedisplay()
+        return
+
+    if IS_PANNING:
+        dx = x - PAN_START_X
+        dy = y - PAN_START_Y
+        CANVAS_OFFSET_X = PAN_START_OFFSET_X - (dx / (GRID_SIZE * CANVAS_SCALE))
+        CANVAS_OFFSET_Y = PAN_START_OFFSET_Y + (dy / (GRID_SIZE * CANVAS_SCALE))
+        glut.glutPostRedisplay()
+
+
+def _handle_ribbon_click(x, y):
+    """Handle clicks inside the secondary ribbon toolbar (y between MENU_BUTTON_HEIGHT and MENU_HEIGHT)."""
+    global SELECT_MODE, OPEN_MENU, OPEN_SUB_MENU
+    # Select Mode Pill
+    sel_left = CURRENT_WIDTH - 235
+    sel_right = CURRENT_WIDTH - 12
+    if sel_left <= x <= sel_right:
+        SELECT_MODE = not SELECT_MODE
+        OPEN_MENU = None
+        OPEN_SUB_MENU = None
+        mode_str = "ENABLED" if SELECT_MODE else "DISABLED"
+        print(f"[Select] Selective cursor mode {mode_str}.")
+        glut.glutPostRedisplay()
+        return
+
+
 def mouse(button, state, x, y):
     """
     Handle mouse input and determine whether the click
     occurred on the menu, dropdown, or canvas.
     """
-
     global OPEN_MENU, OPEN_SUB_MENU, SAVE_DIALOG_OPEN, SAVE_DIALOG_TEXT
-    global PATTERN_DIALOG_OPEN
+    global PATTERN_DIALOG_OPEN, SELECT_MODE, SELECTED_SHAPE_INDICES
+    global IS_PANNING, PAN_START_X, PAN_START_Y, PAN_START_OFFSET_X, PAN_START_OFFSET_Y
+    global IS_DRAGGING_SCALE_SLIDER
+    global SELECT_BOX_ACTIVE, SELECT_BOX_START, SELECT_BOX_CURRENT, SELECT_BOX_DRAGGED
 
-    # Only handle left mouse button.
+    # ── Left mouse button release terminates slider dragging or marquee box ──
+    if button == glut.GLUT_LEFT_BUTTON and state == glut.GLUT_UP:
+        if IS_DRAGGING_SCALE_SLIDER:
+            IS_DRAGGING_SCALE_SLIDER = False
+            glut.glutPostRedisplay()
+            return
+
+        if SELECT_BOX_ACTIVE:
+            SELECT_BOX_ACTIVE = False
+            if SELECT_BOX_DRAGGED:
+                SELECT_BOX_DRAGGED = False
+                # Marquee box selection completed
+                gx1, gy1 = _screen_to_grid(SELECT_BOX_START[0], SELECT_BOX_START[1])
+                gx2, gy2 = _screen_to_grid(x, y)
+                min_gx, max_gx = min(gx1, gx2), max(gx1, gx2)
+                min_gy, max_gy = min(gy1, gy2), max(gy1, gy2)
+                box_hits = _find_shapes_in_box(min_gx, min_gy, max_gx, max_gy)
+                if box_hits:
+                    SELECTED_SHAPE_INDICES.update(box_hits)
+                    summary = _get_selection_summary()
+                    print(f"[Select] Box-selected {len(box_hits)} shape segment(s). Now selected: {summary}.")
+                else:
+                    print("[Select] No shapes inside selection box.")
+                glut.glutPostRedisplay()
+                return
+            else:
+                # Click without dragging
+                handle_canvas_click(x, y)
+                return
+
+    # ── Mouse Wheel Zoom ─────────────────────────────────────────────────
+    if button == 3:  # Wheel Up
+        if state == glut.GLUT_DOWN:
+            _zoom_in()
+        return
+    elif button == 4:  # Wheel Down
+        if state == glut.GLUT_DOWN:
+            _zoom_out()
+        return
+
+    # ── Right / Middle Mouse Button Drag Panning ─────────────────────────
+    if button in (glut.GLUT_RIGHT_BUTTON, glut.GLUT_MIDDLE_BUTTON):
+        if state == glut.GLUT_DOWN:
+            IS_PANNING = True
+            PAN_START_X = x
+            PAN_START_Y = y
+            PAN_START_OFFSET_X = CANVAS_OFFSET_X
+            PAN_START_OFFSET_Y = CANVAS_OFFSET_Y
+        elif state == glut.GLUT_UP:
+            IS_PANNING = False
+        return
+
+    # Only handle left mouse button below.
     if button != glut.GLUT_LEFT_BUTTON:
         return
 
@@ -1199,9 +2009,7 @@ def mouse(button, state, x, y):
         _handle_save_dialog_click(x, y)
         return
 
-    # GLUT mouse coordinates start at the top-left.
-
-    # First, check if a dropdown is open and the click is within it
+    # ── Dropdown Menus ───────────────────────────────────────────────────
     if OPEN_MENU is not None:
         if handle_dropdown_click(x, y):
             return
@@ -1210,23 +2018,41 @@ def mouse(button, state, x, y):
         if y < MENU_HEIGHT:
             if y < MENU_BUTTON_HEIGHT:
                 handle_menu_click(x, y)
+            else:
+                _handle_ribbon_click(x, y)
             return
 
         # Click is outside menu and dropdown — close dropdown
         OPEN_MENU = None
         OPEN_SUB_MENU = None
+        IS_DRAGGING_SCALE_SLIDER = False
         glut.glutPostRedisplay()
         # Also process as canvas click if it's on the canvas
         if y >= MENU_HEIGHT:
-            handle_canvas_click(x, y)
+            if SELECT_MODE:
+                SELECT_BOX_ACTIVE = True
+                SELECT_BOX_START = (x, y)
+                SELECT_BOX_CURRENT = (x, y)
+                SELECT_BOX_DRAGGED = False
+            else:
+                handle_canvas_click(x, y)
         return
 
     # No dropdown open
     if y < MENU_HEIGHT:
         if y < MENU_BUTTON_HEIGHT:
             handle_menu_click(x, y)
+        else:
+            _handle_ribbon_click(x, y)
     else:
+        if SELECT_MODE:
+            SELECT_BOX_ACTIVE = True
+            SELECT_BOX_START = (x, y)
+            SELECT_BOX_CURRENT = (x, y)
+            SELECT_BOX_DRAGGED = False
+            return
         handle_canvas_click(x, y)
+
 
 
 # ============================================================================
@@ -1235,14 +2061,20 @@ def mouse(button, state, x, y):
 
 def _do_clear():
     """
-    Clear all drawn lines and reset point selection.
+    Clear all drawn lines and reset point selection, selection indices, and pivot markers.
     """
-    global drawn_lines, selected_points
+    global drawn_lines, selected_points, SELECTED_SHAPE_INDICES, CURRENT_PIVOT, CURRENT_AXIS
+    global SELECT_BOX_ACTIVE, SELECT_BOX_DRAGGED
     if drawn_lines:
         _save_undo_state()
     drawn_lines = []
     selected_points = []
-    print("[Clear] All lines cleared.")
+    SELECTED_SHAPE_INDICES.clear()
+    SELECT_BOX_ACTIVE = False
+    SELECT_BOX_DRAGGED = False
+    CURRENT_PIVOT = None
+    CURRENT_AXIS = None
+    print("[Clear] All lines and selections cleared.")
     glut.glutPostRedisplay()
 
 
@@ -1309,6 +2141,18 @@ def _confirm_save():
             }
             if shape.get("style") == "UserDefined" and "pattern" in shape:
                 entry["pattern"] = shape["pattern"]
+        elif shape_type == "polygon":
+            entry = {
+                "type": "polygon",
+                "vertices": [list(v) for v in shape.get("vertices", [])],
+                "algorithm": shape.get("algorithm", "Polygon Build"),
+                "color": shape["color"],
+                "width": shape["width"],
+                "style": shape.get("style", "Solid"),
+                "smooth": shape.get("smooth", True),
+            }
+            if shape.get("style") == "UserDefined" and "pattern" in shape:
+                entry["pattern"] = shape["pattern"]
         else:
             entry = {
                 "type": "line",
@@ -1318,6 +2162,7 @@ def _confirm_save():
                 "color": shape["color"],
                 "width": shape["width"],
                 "style": shape.get("style", "Solid"),
+                "smooth": shape.get("smooth", False),
             }
             if shape.get("style") == "UserDefined" and "pattern" in shape:
                 entry["pattern"] = shape["pattern"]
@@ -1465,42 +2310,190 @@ def _handle_pattern_dialog_click(x, y):
 
 
 # ============================================================================
-# Transformation Dialog Logic
+# Transformation Dialog Logic & Multi-Operation Pipeline
 # ============================================================================
 
-def _open_transform_dialog(transform_type):
+def _parse_line_equation(spec):
+    """
+    Parse a line equation string and return two distinct points ((x1, y1), (x2, y2)) on the line.
+    Supports:
+      - 'x-axis' or 'x' -> ((0, 0), (1, 0))
+      - 'y-axis' or 'y' -> ((0, 0), (0, 1))
+      - 'y=mx+c', 'y=2x+3', 'y=-x+4', 'y=x', 'y=5', 'x=3'
+      - 'y=mx+3' (default m=1.0 if m is literal letter 'm')
+      - 'x1,y1,x2,y2' (two explicit points)
+    """
+    s = spec.lower().replace(" ", "").replace("*", "")
+    if s in ("x", "x-axis", "xaxis", "y=0"):
+        return ((0.0, 0.0), (1.0, 0.0))
+    if s in ("y", "y-axis", "yaxis", "x=0"):
+        return ((0.0, 0.0), (0.0, 1.0))
+    if "," in s:
+        nums = [float(p) for p in s.split(",") if p]
+        if len(nums) == 4:
+            return ((nums[0], nums[1]), (nums[2], nums[3]))
+        raise ValueError(f"Reflection point format must be x1,y1,x2,y2 (got {spec})")
+    if s.startswith("x="):
+        c = float(s[2:])
+        return ((c, 0.0), (c, 1.0))
+    if s.startswith("y="):
+        rhs = s[2:]
+        if "x" not in rhs:
+            c = float(rhs)
+            return ((0.0, c), (1.0, c))
+        # Handle literal 'mx' as 1x
+        if rhs.startswith("mx"):
+            rhs = "1" + rhs[1:]
+        elif "+mx" in rhs:
+            rhs = rhs.replace("+mx", "+1x")
+        elif "-mx" in rhs:
+            rhs = rhs.replace("-mx", "-1x")
+        x_idx = rhs.index("x")
+        m_str = rhs[:x_idx]
+        m = 1.0 if m_str in ("", "+") else (-1.0 if m_str == "-" else float(m_str))
+        c_str = rhs[x_idx+1:]
+        c = 0.0 if c_str == "" else float(c_str)
+        return ((0.0, c), (1.0, m + c))
+    raise ValueError(f"Unrecognized line format: '{spec}' (expected e.g. y=mx+3, y=2x+1, x, y, or x1,y1,x2,y2)")
+
+
+def _parse_multi_op(pipeline_str):
+    """
+    Parse a pipeline string of multiple transformations like:
+      'T:2,2;R:30;RE:y=mx+3'
+    T  -> Translation by (tx, ty)
+    R  -> Rotation by angle (degrees) [optional pivot: R:angle,px,py]
+    S  -> Scaling by (sx, sy)
+    RE -> Reflection about line (y=mx+c, x, y, etc.)
+    Returns (composite_matrix, log_steps, last_axis).
+    """
+    ops = [s.strip() for s in pipeline_str.split(";") if s.strip()]
+    matrices = []
+    log_steps = []
+    last_axis = None
+
+    for op in ops:
+        if ":" not in op:
+            continue
+        code, arg = op.split(":", 1)
+        code = code.strip().upper()
+        arg = arg.strip()
+
+        if code in ("T", "TRANSLATE", "TRANS"):
+            parts = [float(p.strip()) for p in arg.split(",") if p.strip()]
+            tx = parts[0]
+            ty = parts[1] if len(parts) > 1 else 0.0
+            matrices.append(translation_matrix(tx, ty))
+            log_steps.append(f"Translation(tx={tx}, ty={ty})")
+        elif code in ("R", "ROTATE", "ROT"):
+            parts = [float(p.strip()) for p in arg.split(",") if p.strip()]
+            angle = parts[0]
+            if len(parts) >= 3:
+                px, py = parts[1], parts[2]
+                matrices.append(transform_about_point_matrix(px, py, angle_deg=angle))
+                log_steps.append(f"Rotation({angle}° about pivot ({px}, {py}))")
+            else:
+                matrices.append(rotation_matrix(angle))
+                log_steps.append(f"Rotation({angle}°)")
+        elif code in ("S", "SCALE"):
+            parts = [float(p.strip()) for p in arg.split(",") if p.strip()]
+            sx = parts[0]
+            sy = parts[1] if len(parts) > 1 else sx
+            matrices.append(scaling_matrix(sx, sy))
+            log_steps.append(f"Scaling(sx={sx}, sy={sy})")
+        elif code in ("RE", "REF", "REFLECT", "M", "MIRROR"):
+            p1, p2 = _parse_line_equation(arg)
+            last_axis = (p1, p2)
+            matrices.append(transform_about_axis_matrix(p1[0], p1[1], p2[0], p2[1]))
+            log_steps.append(f"Reflection(line through ({p1[0]:.1f},{p1[1]:.1f}) -> ({p2[0]:.1f},{p2[1]:.1f}))")
+        else:
+            raise ValueError(f"Unknown operation code '{code}' in '{op}'")
+
+    if not matrices:
+        raise ValueError("No valid operations found in pipeline string")
+
+    composite_M = compose_transformations(*matrices)
+    return composite_M, log_steps, last_axis
+
+
+def _apply_direct_reflection(axis_type):
+    """
+    Directly reflect drawn shapes across the X-axis or Y-axis.
+    """
+    global CURRENT_AXIS
+    if axis_type == "x":
+        M = [
+            [1.0,  0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0,  0.0, 1.0],
+        ]
+        CURRENT_AXIS = ((-100, 0), (100, 0))
+        print("[Transform] Reflection about X-Axis (y -> -y)")
+    else:
+        M = [
+            [-1.0, 0.0, 0.0],
+            [ 0.0, 1.0, 0.0],
+            [ 0.0, 0.0, 1.0],
+        ]
+        CURRENT_AXIS = ((0, -100), (0, 100))
+        print("[Transform] Reflection about Y-Axis (x -> -x)")
+
+    _apply_transform_to_shapes(M)
+    glut.glutPostRedisplay()
+
+
+def _open_transform_dialog(transform_type, pivot=None, axis=None):
     """
     Open the transformation parameter input dialog for the given type.
+    Optionally accepts a pre-selected pivot point or axis points.
     """
     global TRANSFORM_DIALOG_OPEN, TRANSFORM_DIALOG_TYPE
     global TRANSFORM_DIALOG_FIELDS, TRANSFORM_DIALOG_FIELD_ORDER
-    global TRANSFORM_DIALOG_ACTIVE_FIELD
+    global TRANSFORM_DIALOG_ACTIVE_FIELD, CURRENT_PIVOT, CURRENT_AXIS
 
     TRANSFORM_DIALOG_TYPE = transform_type
 
     if transform_type == "Translation":
         TRANSFORM_DIALOG_FIELDS = {"tx": "", "ty": ""}
         TRANSFORM_DIALOG_FIELD_ORDER = ["tx", "ty"]
+        TRANSFORM_DIALOG_ACTIVE_FIELD = 0
     elif transform_type == "Scaling":
         TRANSFORM_DIALOG_FIELDS = {"sx": "", "sy": ""}
         TRANSFORM_DIALOG_FIELD_ORDER = ["sx", "sy"]
+        TRANSFORM_DIALOG_ACTIVE_FIELD = 0
     elif transform_type == "Rotation":
         TRANSFORM_DIALOG_FIELDS = {"angle": ""}
         TRANSFORM_DIALOG_FIELD_ORDER = ["angle"]
+        TRANSFORM_DIALOG_ACTIVE_FIELD = 0
     elif transform_type == "Transform About a Point":
         # T(pivot) · R(θ) · S(sx, sy) · T(-pivot)
+        if pivot is not None:
+            CURRENT_PIVOT = pivot
+        px_val = str(CURRENT_PIVOT[0]) if CURRENT_PIVOT is not None else "0"
+        py_val = str(CURRENT_PIVOT[1]) if CURRENT_PIVOT is not None else "0"
         TRANSFORM_DIALOG_FIELDS = {
-            "pivot_x": "", "pivot_y": "", "angle": "", "sx": "", "sy": "",
+            "pivot_x": px_val, "pivot_y": py_val, "angle": "", "sx": "1", "sy": "1",
         }
         TRANSFORM_DIALOG_FIELD_ORDER = ["pivot_x", "pivot_y", "angle", "sx", "sy"]
+        TRANSFORM_DIALOG_ACTIVE_FIELD = 2 if CURRENT_PIVOT is not None else 0
     elif transform_type == "Transform About an Axis":
         # The axis is an arbitrary line represented by two points.
-        TRANSFORM_DIALOG_FIELDS = {"axis_x1": "", "axis_y1": "", "axis_x2": "", "axis_y2": ""}
+        if axis is not None:
+            CURRENT_AXIS = axis
+        ax1 = str(CURRENT_AXIS[0][0]) if CURRENT_AXIS is not None else "0"
+        ay1 = str(CURRENT_AXIS[0][1]) if CURRENT_AXIS is not None else "0"
+        ax2 = str(CURRENT_AXIS[1][0]) if CURRENT_AXIS is not None else "1"
+        ay2 = str(CURRENT_AXIS[1][1]) if CURRENT_AXIS is not None else "0"
+        TRANSFORM_DIALOG_FIELDS = {"axis_x1": ax1, "axis_y1": ay1, "axis_x2": ax2, "axis_y2": ay2}
         TRANSFORM_DIALOG_FIELD_ORDER = ["axis_x1", "axis_y1", "axis_x2", "axis_y2"]
+        TRANSFORM_DIALOG_ACTIVE_FIELD = 0
+    elif transform_type == "Multi Operation":
+        TRANSFORM_DIALOG_FIELDS = {"pipeline": ""}
+        TRANSFORM_DIALOG_FIELD_ORDER = ["pipeline"]
+        TRANSFORM_DIALOG_ACTIVE_FIELD = 0
     else:
         return
 
-    TRANSFORM_DIALOG_ACTIVE_FIELD = 0
     TRANSFORM_DIALOG_OPEN = True
     print(f"[Transform] Opening {transform_type} dialog.")
     glut.glutPostRedisplay()
@@ -1528,9 +2521,9 @@ def _compose_transform_matrices(*matrices):
 def _confirm_transform():
     """
     Parse the dialog input values, build the transformation matrix,
-    and apply it to all drawn shapes on the canvas.
+    and apply it to drawn shapes on the canvas (or selected shapes if any).
     """
-    global TRANSFORM_DIALOG_OPEN
+    global TRANSFORM_DIALOG_OPEN, CURRENT_PIVOT, CURRENT_AXIS
 
     try:
         if TRANSFORM_DIALOG_TYPE == "Translation":
@@ -1557,6 +2550,7 @@ def _confirm_transform():
         elif TRANSFORM_DIALOG_TYPE == "Transform About a Point":
             pivot_x = _safe_parse_transform_float(TRANSFORM_DIALOG_FIELDS.get("pivot_x"), 0.0)
             pivot_y = _safe_parse_transform_float(TRANSFORM_DIALOG_FIELDS.get("pivot_y"), 0.0)
+            CURRENT_PIVOT = (int(round_half_up(pivot_x)), int(round_half_up(pivot_y)))
             angle = _safe_parse_transform_float(TRANSFORM_DIALOG_FIELDS.get("angle"), 0.0)
             sx = _safe_parse_transform_float(TRANSFORM_DIALOG_FIELDS.get("sx"), 1.0)
             sy = _safe_parse_transform_float(TRANSFORM_DIALOG_FIELDS.get("sy"), 1.0)
@@ -1576,8 +2570,24 @@ def _confirm_transform():
                 print("[Transform] Axis needs two different points.")
                 return
 
+            CURRENT_AXIS = ((int(round_half_up(x1)), int(round_half_up(y1))), (int(round_half_up(x2)), int(round_half_up(y2))))
             M = transform_about_axis_matrix(x1, y1, x2, y2)
             print(f"[Transform] Reflection about axis through ({x1}, {y1}) and ({x2}, {y2})")
+
+        elif TRANSFORM_DIALOG_TYPE == "Multi Operation":
+            pipeline_str = TRANSFORM_DIALOG_FIELDS.get("pipeline", "").strip()
+            if not pipeline_str:
+                print("[Transform] Multi Operation cancelled: no operations entered.")
+                TRANSFORM_DIALOG_OPEN = False
+                glut.glutPostRedisplay()
+                return
+            M, log_steps, last_axis = _parse_multi_op(pipeline_str)
+            if last_axis is not None:
+                CURRENT_AXIS = ((int(round_half_up(last_axis[0][0])), int(round_half_up(last_axis[0][1]))),
+                                (int(round_half_up(last_axis[1][0])), int(round_half_up(last_axis[1][1]))))
+            print(f"[Transform] Multi Operation: {pipeline_str}")
+            for step in log_steps:
+                print(f"  • {step}")
 
         else:
             print(f"[Transform] Unknown type: {TRANSFORM_DIALOG_TYPE}")
@@ -1597,10 +2607,11 @@ def _confirm_transform():
 
 def _apply_transform_to_shapes(M):
     """
-    Apply a 3×3 homogeneous transformation matrix M to all drawn shapes.
+    Apply a 3×3 homogeneous transformation matrix M to drawn shapes.
     Transforms the control points and recomputes the rasterised pixels.
+    If shapes/polygon are selected, applies transformation ONLY to selected shapes.
     """
-    global drawn_lines
+    global drawn_lines, SELECTED_SHAPE_INDICES
 
     if not drawn_lines:
         print("[Transform] No shapes on canvas to transform.")
@@ -1608,7 +2619,16 @@ def _apply_transform_to_shapes(M):
 
     _save_undo_state()
 
-    for shape in drawn_lines:
+    valid_selected = {i for i in SELECTED_SHAPE_INDICES if 0 <= i < len(drawn_lines)}
+    if valid_selected:
+        target_indices = valid_selected
+        desc = f"{len(target_indices)} selected shape(s)"
+    else:
+        target_indices = set(range(len(drawn_lines)))
+        desc = f"all {len(drawn_lines)} shape(s)"
+
+    for idx in target_indices:
+        shape = drawn_lines[idx]
         shape_type = shape.get("type", "line")
 
         if shape_type == "line":
@@ -1620,13 +2640,22 @@ def _apply_transform_to_shapes(M):
             shape["p1"] = (int(round_half_up(np1[0])), int(round_half_up(np1[1])))
             shape["p2"] = (int(round_half_up(np2[0])), int(round_half_up(np2[1])))
 
-            # Recompute rasterised points
-            shape["line_points"] = compute_line_points(
-                shape.get("algorithm", "Bresenham"),
-                shape["p1"][0], shape["p1"][1],
-                shape["p2"][0], shape["p2"][1],
-            )
+            # Recompute rasterised points for raster lines
+            if not shape.get("smooth", False):
+                shape["line_points"] = compute_line_points(
+                    shape.get("algorithm", "Bresenham"),
+                    shape["p1"][0], shape["p1"][1],
+                    shape["p2"][0], shape["p2"][1],
+                )
             print(f"  [Line] ({p1}) → ({shape['p1']}), ({p2}) → ({shape['p2']})")
+
+        elif shape_type == "polygon":
+            new_verts = []
+            for vx, vy in shape.get("vertices", []):
+                nv = mat3_transform_point(M, vx, vy)
+                new_verts.append((int(round_half_up(nv[0])), int(round_half_up(nv[1]))))
+            shape["vertices"] = new_verts
+            print(f"  [Polygon] Transformed {len(new_verts)} vertices.")
 
         elif shape_type == "circle":
             # Transform centre
@@ -1681,18 +2710,20 @@ def _apply_transform_to_shapes(M):
             )
             print(f"  [Ellipse] centre ({c}) → ({shape['center']}), rx={shape['rx']}, ry={shape['ry']}")
 
-    print(f"[Transform] Applied to {len(drawn_lines)} shape(s).")
+    print(f"[Transform] Applied to {desc}.")
+
 
 
 def _handle_transform_dialog_click(x, y):
     """
     Handle mouse clicks when the transform dialog is open.
-    Check if Apply or Cancel buttons were clicked, or if a field was clicked.
+    Check if Apply, Cancel, or Pick on Canvas buttons were clicked, or if a field was clicked.
     """
     global TRANSFORM_DIALOG_OPEN, TRANSFORM_DIALOG_ACTIVE_FIELD
+    global PICKING_PIVOT, PIVOT_TRANSFORM_TYPE, PICKING_AXIS_STEP, AXIS_FIRST_POINT
 
-    dialog_w = 460
-    dialog_h = 60 + len(TRANSFORM_DIALOG_FIELD_ORDER) * 60 + 100
+    dialog_w = 540 if TRANSFORM_DIALOG_TYPE == "Multi Operation" else 460
+    dialog_h = 240 if TRANSFORM_DIALOG_TYPE == "Multi Operation" else (60 + len(TRANSFORM_DIALOG_FIELD_ORDER) * 60 + 100)
     dlg_left = (CURRENT_WIDTH - dialog_w) / 2
     dlg_right = dlg_left + dialog_w
     dlg_top  = (CURRENT_HEIGHT - dialog_h) / 2
@@ -1730,6 +2761,25 @@ def _handle_transform_dialog_click(x, y):
             print("[Transform] Cancelled.")
             glut.glutPostRedisplay()
             return
+        if TRANSFORM_DIALOG_TYPE in ("Transform About a Point", "Transform About an Axis"):
+            pick_btn_w = 140
+            pick_btn_left = cancel_btn_left - 12 - pick_btn_w
+            pick_btn_right = pick_btn_left + pick_btn_w
+            if pick_btn_left <= x <= pick_btn_right:
+                if TRANSFORM_DIALOG_TYPE == "Transform About a Point":
+                    TRANSFORM_DIALOG_OPEN = False
+                    PICKING_PIVOT = True
+                    PIVOT_TRANSFORM_TYPE = "Transform About a Point"
+                    print("[Composite] Click on canvas to choose Pivot Point.")
+                    glut.glutPostRedisplay()
+                    return
+                elif TRANSFORM_DIALOG_TYPE == "Transform About an Axis":
+                    TRANSFORM_DIALOG_OPEN = False
+                    PICKING_AXIS_STEP = 1
+                    AXIS_FIRST_POINT = None
+                    print("[Composite] Click on canvas to pick 1st point for Reflection Axis.")
+                    glut.glutPostRedisplay()
+                    return
 
     # Click anywhere else — keep dialog open (modal behavior)
 
@@ -1814,6 +2864,22 @@ def _do_import(filename):
             if style == "UserDefined":
                 ellipse_entry["pattern"] = pattern
             drawn_lines.append(ellipse_entry)
+        elif shape_type == "polygon":
+            verts = [tuple(v) for v in entry.get("vertices", [])]
+            style = entry.get("style", "Solid")
+            pattern = entry.get("pattern", "11110000")
+            poly_entry = {
+                "type": "polygon",
+                "vertices": verts,
+                "algorithm": algorithm,
+                "color": color,
+                "width": width,
+                "style": style,
+                "smooth": entry.get("smooth", True),
+            }
+            if style == "UserDefined":
+                poly_entry["pattern"] = pattern
+            drawn_lines.append(poly_entry)
         else:
             p1 = tuple(entry["p1"])
             p2 = tuple(entry["p2"])
@@ -1830,6 +2896,7 @@ def _do_import(filename):
                 "color": color,
                 "width": width,
                 "style": style,
+                "smooth": entry.get("smooth", False),
                 "line_points": line_pts,
             }
             if style == "UserDefined":
@@ -1859,7 +2926,7 @@ def get_canvas_height_width():
 def setup_canvas_projection(width, height):
     """
     Configure the OpenGL viewport and Cartesian projection
-    used by the drawing canvas.
+    used by the drawing canvas, with zoom scale and pan offset.
     """
 
     gl.glViewport(
@@ -1873,14 +2940,17 @@ def setup_canvas_projection(width, height):
     gl.glMatrixMode(gl.GL_PROJECTION)
     gl.glLoadIdentity()
 
-    half_height = height / 2
-    half_width = width / 2
+    half_height = (height / 2.0) / CANVAS_SCALE
+    half_width = (width / 2.0) / CANVAS_SCALE
+
+    cx = CANVAS_OFFSET_X * GRID_SIZE
+    cy = CANVAS_OFFSET_Y * GRID_SIZE
 
     glu.gluOrtho2D(
-        -half_width,
-        half_width,
-        -half_height,
-        half_height,
+        cx - half_width,
+        cx + half_width,
+        cy - half_height,
+        cy + half_height,
     )
 
     # Model-view matrix
@@ -1894,63 +2964,105 @@ def setup_canvas_projection(width, height):
 
 def draw_grid(half_height, half_width):
     """
-    Draw the Cartesian grid centered around the origin.
+    Draw a clean, dual-tier Cartesian grid across the visible canvas viewport.
+    Renders subtle minor grid lines and distinct major grid lines every 5 units.
     """
+    vis_half_w = half_width / CANVAS_SCALE
+    vis_half_h = half_height / CANVAS_SCALE
+    cx = CANVAS_OFFSET_X * GRID_SIZE
+    cy = CANVAS_OFFSET_Y * GRID_SIZE
 
-    gl.glLineWidth(GRID_LINE_THICKNESS)
+    x_min = cx - vis_half_w - GRID_SIZE
+    x_max = cx + vis_half_w + GRID_SIZE
+    y_min = cy - vis_half_h - GRID_SIZE
+    y_max = cy + vis_half_h + GRID_SIZE
+
+    start_gx = int(math.floor(x_min / GRID_SIZE))
+    end_gx = int(math.ceil(x_max / GRID_SIZE))
+    start_gy = int(math.floor(y_min / GRID_SIZE))
+    end_gy = int(math.ceil(y_max / GRID_SIZE))
+
+    # Minor grid lines (1 grid unit)
+    gl.glLineWidth(1.0)
     gl.glColor3f(*GRID_LINE_COLOR)
-
     gl.glBegin(gl.GL_LINES)
+    for g in range(start_gx, end_gx + 1):
+        if g % 5 != 0 and g != 0:
+            vx = g * GRID_SIZE
+            gl.glVertex2f(vx, y_min)
+            gl.glVertex2f(vx, y_max)
+    for g in range(start_gy, end_gy + 1):
+        if g % 5 != 0 and g != 0:
+            vy = g * GRID_SIZE
+            gl.glVertex2f(x_min, vy)
+            gl.glVertex2f(x_max, vy)
+    gl.glEnd()
 
-    # Vertical grid lines
-    x = 0
-
-    while x <= half_width:
-
-        gl.glVertex2f(x, -half_height)
-        gl.glVertex2f(x, half_height)
-
-        if x != 0:
-            gl.glVertex2f(-x, -half_height)
-            gl.glVertex2f(-x, half_height)
-
-        x += GRID_SIZE
-
-    # Horizontal grid lines
-    y = 0
-
-    while y <= half_height:
-
-        gl.glVertex2f(-half_width, y)
-        gl.glVertex2f(half_width, y)
-
-        if y != 0:
-            gl.glVertex2f(-half_width, -y)
-            gl.glVertex2f(half_width, -y)
-
-        y += GRID_SIZE
-
+    # Major grid lines (5 grid units)
+    gl.glLineWidth(1.2)
+    gl.glColor3f(*GRID_MAJOR_LINE_COLOR)
+    gl.glBegin(gl.GL_LINES)
+    for g in range(start_gx, end_gx + 1):
+        if g % 5 == 0 and g != 0:
+            vx = g * GRID_SIZE
+            gl.glVertex2f(vx, y_min)
+            gl.glVertex2f(vx, y_max)
+    for g in range(start_gy, end_gy + 1):
+        if g % 5 == 0 and g != 0:
+            vy = g * GRID_SIZE
+            gl.glVertex2f(x_min, vy)
+            gl.glVertex2f(x_max, vy)
     gl.glEnd()
 
 
 def draw_origin_line(half_height, half_width):
     """
-    Draw the X and Y axes.
+    Draw high-contrast, colored Cartesian axes:
+    Coral red X-axis with arrowhead and '+X' indicator,
+    Emerald green Y-axis with arrowhead and '+Y' indicator.
     """
+    vis_half_w = half_width / CANVAS_SCALE
+    vis_half_h = half_height / CANVAS_SCALE
+    cx = CANVAS_OFFSET_X * GRID_SIZE
+    cy = CANVAS_OFFSET_Y * GRID_SIZE
 
-    gl.glColor3f(*ORIGIN_LINE_COLOR)
-    gl.glLineWidth(ORIGIN_LINE_THICKNESS)
+    x_min = cx - vis_half_w - 50
+    x_max = cx + vis_half_w + 50
+    y_min = cy - vis_half_h - 50
+    y_max = cy + vis_half_h + 50
 
+    arrow_size = 7.0 / max(0.4, CANVAS_SCALE)
+
+    # X-axis (Coral Red)
+    gl.glLineWidth(2.2)
+    gl.glColor3f(*ORIGIN_X_COLOR)
     gl.glBegin(gl.GL_LINES)
+    gl.glVertex2f(x_min, 0)
+    gl.glVertex2f(x_max, 0)
+    # Right arrowhead on +X
+    gl.glVertex2f(x_max, 0)
+    gl.glVertex2f(x_max - arrow_size * 2, arrow_size)
+    gl.glVertex2f(x_max, 0)
+    gl.glVertex2f(x_max - arrow_size * 2, -arrow_size)
+    gl.glEnd()
 
-    # X-axis
-    gl.glVertex2f(-half_width, 0)
-    gl.glVertex2f(half_width, 0)
+    # Y-axis (Emerald Green)
+    gl.glColor3f(*ORIGIN_Y_COLOR)
+    gl.glBegin(gl.GL_LINES)
+    gl.glVertex2f(0, y_min)
+    gl.glVertex2f(0, y_max)
+    # Top arrowhead on +Y
+    gl.glVertex2f(0, y_max)
+    gl.glVertex2f(-arrow_size, y_max - arrow_size * 2)
+    gl.glVertex2f(0, y_max)
+    gl.glVertex2f(arrow_size, y_max - arrow_size * 2)
+    gl.glEnd()
 
-    # Y-axis
-    gl.glVertex2f(0, -half_height)
-    gl.glVertex2f(0, half_height)
-
+    # Origin center dot
+    gl.glPointSize(5.0)
+    gl.glColor3f(0.0, 0.0, 0.0)
+    gl.glBegin(gl.GL_POINTS)
+    gl.glVertex2f(0, 0)
     gl.glEnd()
 
 
@@ -2114,7 +3226,20 @@ def _draw_styled_line(x1, y1, x2, y2, style, width, user_pattern=""):
 
 
 def _draw_circle_filled_point(cx, cy, radius=3, segments=16):
-    """Draw a small filled circle at canvas coordinates (cx, cy)."""
+    """Draw a small filled circle at canvas coordinates (cx, cy).
+    Radius is compensated for CANVAS_SCALE so handles stay constant screen-size."""
+    inv_scale = 1.0 / CANVAS_SCALE
+    r = radius * inv_scale
+    gl.glBegin(gl.GL_POLYGON)
+    for i in range(segments):
+        theta = 2.0 * math.pi * i / segments
+        gl.glVertex2f(cx + r * math.cos(theta),
+                      cy + r * math.sin(theta))
+    gl.glEnd()
+
+
+def _draw_ui_circle_filled(cx, cy, radius, segments=16):
+    """Draw a small filled circle in screen / UI coordinates (no scale division)."""
     gl.glBegin(gl.GL_POLYGON)
     for i in range(segments):
         theta = 2.0 * math.pi * i / segments
@@ -2528,14 +3653,18 @@ def _draw_canvas_label(x, y, text, align="center", text_color=(0.10, 0.12, 0.18)
     """
     Render a clean, high-contrast label with a crisp background badge/pill
     to guarantee 100% legibility and prevent visual overlap with grid lines or shapes.
+    Sizes are compensated for CANVAS_SCALE so the label stays constant screen-size.
     """
     if not text:
         return
 
-    char_w = 7.2
-    pad_x = 5.0
-    pad_y = 3.0
-    font_h = 10.0
+    # Compensate for canvas zoom so decorations stay constant screen-size
+    inv_scale = 1.0 / CANVAS_SCALE
+
+    char_w = 7.2 * inv_scale
+    pad_x = 5.0 * inv_scale
+    pad_y = 3.0 * inv_scale
+    font_h = 10.0 * inv_scale
 
     text_w = len(text) * char_w
     box_w = text_w + pad_x * 2.0
@@ -2739,8 +3868,39 @@ def draw_lines_on_canvas():
         if shape_type == "line":
             gl.glColor3f(*color)
             gl.glLineWidth(width)
-            pts = shape.get("line_points", [])
-            _draw_algorithm_points_with_style(pts, style, width, user_pattern, close_loop=False)
+            if shape.get("smooth", False):
+                p1 = shape["p1"]
+                p2 = shape["p2"]
+                _draw_styled_line(p1[0] * GRID_SIZE, p1[1] * GRID_SIZE,
+                                  p2[0] * GRID_SIZE, p2[1] * GRID_SIZE,
+                                  style, width, user_pattern)
+            else:
+                pts = shape.get("line_points", [])
+                _draw_algorithm_points_with_style(pts, style, width, user_pattern, close_loop=False)
+
+        elif shape_type == "polygon":
+            verts = shape.get("vertices", [])
+            n = len(verts)
+            if n >= 2:
+                gl.glColor3f(*color)
+                gl.glLineWidth(width)
+                gl.glEnable(gl.GL_LINE_SMOOTH)
+                gl.glEnable(gl.GL_BLEND)
+                gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+                gl.glHint(gl.GL_LINE_SMOOTH_HINT, gl.GL_NICEST)
+
+                if style == "Solid":
+                    gl.glBegin(gl.GL_LINE_LOOP)
+                    for vx, vy in verts:
+                        gl.glVertex2f(vx * GRID_SIZE, vy * GRID_SIZE)
+                    gl.glEnd()
+                else:
+                    for i in range(n):
+                        v1 = verts[i]
+                        v2 = verts[(i + 1) % n]
+                        _draw_styled_line(v1[0] * GRID_SIZE, v1[1] * GRID_SIZE,
+                                          v2[0] * GRID_SIZE, v2[1] * GRID_SIZE,
+                                          style, width, user_pattern)
 
         elif shape_type == "circle":
             centre = shape.get("center", (0, 0))
@@ -2987,11 +4147,321 @@ def draw_lines_on_canvas():
     gl.glDisable(gl.GL_LINE_SMOOTH)
     gl.glDisable(gl.GL_BLEND)
 
+
+def draw_selection_highlights():
+    """
+    Draw glowing visual highlights and vertex handles around selected shapes and polygons.
+    """
+    global SELECTED_SHAPE_INDICES
+    if not SELECTED_SHAPE_INDICES or not drawn_lines:
+        return
+
+    valid_indices = [i for i in SELECTED_SHAPE_INDICES if 0 <= i < len(drawn_lines)]
+    if not valid_indices:
+        return
+
+    gl.glEnable(gl.GL_BLEND)
+    gl.glEnable(gl.GL_LINE_SMOOTH)
+    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+
+    # Highlight color: Vibrant Cyan
+    hl_color = (0.0, 0.82, 1.0)
+
+    all_xs = []
+    all_ys = []
+
+    for idx in valid_indices:
+        shape = drawn_lines[idx]
+        stype = shape.get("type", "line")
+        width = shape.get("width", 1)
+
+        if stype == "line":
+            p1 = shape["p1"]
+            p2 = shape["p2"]
+            x1, y1 = p1[0] * GRID_SIZE, p1[1] * GRID_SIZE
+            x2, y2 = p2[0] * GRID_SIZE, p2[1] * GRID_SIZE
+            all_xs.extend([x1, x2])
+            all_ys.extend([y1, y2])
+
+            # Draw glowing line halo
+            gl.glColor4f(hl_color[0], hl_color[1], hl_color[2], 0.50)
+            gl.glLineWidth(width + 5)
+            gl.glBegin(gl.GL_LINES)
+            gl.glVertex2f(x1, y1)
+            gl.glVertex2f(x2, y2)
+            gl.glEnd()
+
+            # Inner bright core
+            gl.glColor4f(1.0, 1.0, 1.0, 0.70)
+            gl.glLineWidth(max(1, width))
+            gl.glBegin(gl.GL_LINES)
+            gl.glVertex2f(x1, y1)
+            gl.glVertex2f(x2, y2)
+            gl.glEnd()
+
+            # Vertex ring handles
+            gl.glColor4f(hl_color[0], hl_color[1], hl_color[2], 0.95)
+            _draw_circle_filled_point(x1, y1, radius=4.0)
+            _draw_circle_filled_point(x2, y2, radius=4.0)
+            gl.glColor4f(1.0, 1.0, 1.0, 1.0)
+            _draw_circle_filled_point(x1, y1, radius=1.8)
+            _draw_circle_filled_point(x2, y2, radius=1.8)
+
+        elif stype == "circle":
+            c = shape.get("center", (0, 0))
+            cx, cy = c[0] * GRID_SIZE, c[1] * GRID_SIZE
+            r = shape.get("radius", 0) * GRID_SIZE
+            all_xs.extend([cx - r, cx + r])
+            all_ys.extend([cy - r, cy + r])
+
+            gl.glColor4f(hl_color[0], hl_color[1], hl_color[2], 0.50)
+            gl.glLineWidth(width + 5)
+            gl.glBegin(gl.GL_LINE_LOOP)
+            for i in range(48):
+                ang = 2.0 * math.pi * i / 48
+                gl.glVertex2f(cx + r * math.cos(ang), cy + r * math.sin(ang))
+            gl.glEnd()
+
+            gl.glColor4f(hl_color[0], hl_color[1], hl_color[2], 0.95)
+            _draw_circle_filled_point(cx, cy, radius=4.0)
+            gl.glColor4f(1.0, 1.0, 1.0, 1.0)
+            _draw_circle_filled_point(cx, cy, radius=1.8)
+
+        elif stype == "ellipse":
+            c = shape.get("center", (0, 0))
+            cx, cy = c[0] * GRID_SIZE, c[1] * GRID_SIZE
+            rx = shape.get("rx", 1) * GRID_SIZE
+            ry = shape.get("ry", 1) * GRID_SIZE
+            all_xs.extend([cx - max(rx, ry), cx + max(rx, ry)])
+            all_ys.extend([cy - max(rx, ry), cy + max(rx, ry)])
+            angle = shape.get("angle", 0.0)
+            cos_a = math.cos(angle)
+            sin_a = math.sin(angle)
+
+            gl.glColor4f(hl_color[0], hl_color[1], hl_color[2], 0.50)
+            gl.glLineWidth(width + 5)
+            gl.glBegin(gl.GL_LINE_LOOP)
+            for i in range(48):
+                t = 2.0 * math.pi * i / 48
+                lx = rx * math.cos(t)
+                ly = ry * math.sin(t)
+                wx = cx + lx * cos_a - ly * sin_a
+                wy = cy + lx * sin_a + ly * cos_a
+                gl.glVertex2f(wx, wy)
+            gl.glEnd()
+
+            gl.glColor4f(hl_color[0], hl_color[1], hl_color[2], 0.95)
+            _draw_circle_filled_point(cx, cy, radius=4.0)
+            gl.glColor4f(1.0, 1.0, 1.0, 1.0)
+            _draw_circle_filled_point(cx, cy, radius=1.8)
+
+        elif stype == "polygon":
+            verts = shape.get("vertices", [])
+            for vx, vy in verts:
+                all_xs.append(vx * GRID_SIZE)
+                all_ys.append(vy * GRID_SIZE)
+
+            # Draw glowing polygon halo
+            gl.glColor4f(hl_color[0], hl_color[1], hl_color[2], 0.50)
+            gl.glLineWidth(width + 5)
+            gl.glBegin(gl.GL_LINE_LOOP)
+            for vx, vy in verts:
+                gl.glVertex2f(vx * GRID_SIZE, vy * GRID_SIZE)
+            gl.glEnd()
+
+            # Inner bright core
+            gl.glColor4f(1.0, 1.0, 1.0, 0.70)
+            gl.glLineWidth(max(1, width))
+            gl.glBegin(gl.GL_LINE_LOOP)
+            for vx, vy in verts:
+                gl.glVertex2f(vx * GRID_SIZE, vy * GRID_SIZE)
+            gl.glEnd()
+
+            # Vertex ring handles
+            for vx, vy in verts:
+                wx = vx * GRID_SIZE
+                wy = vy * GRID_SIZE
+                gl.glColor4f(hl_color[0], hl_color[1], hl_color[2], 0.95)
+                _draw_circle_filled_point(wx, wy, radius=4.0)
+                gl.glColor4f(1.0, 1.0, 1.0, 1.0)
+                _draw_circle_filled_point(wx, wy, radius=1.8)
+
+    # Subtle bounding box around the entire selection
+    if all_xs and all_ys:
+        inv_scale = 1.0 / CANVAS_SCALE
+        pad = 12.0 * inv_scale
+        bx_min = min(all_xs) - pad
+        bx_max = max(all_xs) + pad
+        by_min = min(all_ys) - pad
+        by_max = max(all_ys) + pad
+
+        gl.glColor4f(hl_color[0], hl_color[1], hl_color[2], 0.28)
+        gl.glLineWidth(1.0)
+        gl.glBegin(gl.GL_LINE_LOOP)
+        gl.glVertex2f(bx_min, by_min)
+        gl.glVertex2f(bx_max, by_min)
+        gl.glVertex2f(bx_max, by_max)
+        gl.glVertex2f(bx_min, by_max)
+        gl.glEnd()
+
+        # Bounding box label badge
+        summary = _get_selection_summary()
+        label = f"Selected: {summary}"
+        _draw_canvas_label(bx_min, by_max + 12.0 * inv_scale, label, align="left",
+                           text_color=(0.0, 0.70, 0.95),
+                           border_color=(0.0, 0.85, 1.0))
+
+    gl.glLineWidth(1)
+    gl.glDisable(gl.GL_BLEND)
+    gl.glDisable(gl.GL_LINE_SMOOTH)
+
+
+def draw_pivot_and_axis_markers():
+    """
+    Draw permanent and live preview indicators for composite transformation pivot & axis.
+    """
+    global CURRENT_PIVOT, CURRENT_AXIS, PICKING_PIVOT, PICKING_AXIS_STEP, AXIS_FIRST_POINT
+    global current_mouse_grid
+
+    gl.glEnable(gl.GL_BLEND)
+    gl.glEnable(gl.GL_LINE_SMOOTH)
+    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+
+    # ── 1. Draw Active / Saved Pivot Marker ──────────────────────────────
+    if CURRENT_PIVOT is not None:
+        pvx = CURRENT_PIVOT[0] * GRID_SIZE
+        pvy = CURRENT_PIVOT[1] * GRID_SIZE
+
+        # Outer glowing amber ring
+        gl.glColor4f(1.0, 0.55, 0.05, 0.85)
+        gl.glLineWidth(2.0)
+        gl.glBegin(gl.GL_LINE_LOOP)
+        for i in range(24):
+            a = 2.0 * math.pi * i / 24
+            gl.glVertex2f(pvx + 9.0 * math.cos(a), pvy + 9.0 * math.sin(a))
+        gl.glEnd()
+
+        # Crosshair through pivot
+        gl.glLineWidth(1.5)
+        gl.glBegin(gl.GL_LINES)
+        gl.glVertex2f(pvx - 14.0, pvy)
+        gl.glVertex2f(pvx + 14.0, pvy)
+        gl.glVertex2f(pvx, pvy - 14.0)
+        gl.glVertex2f(pvx, pvy + 14.0)
+        gl.glEnd()
+
+        # Center dot
+        gl.glColor4f(1.0, 0.80, 0.20, 1.0)
+        _draw_circle_filled_point(pvx, pvy, radius=3.0)
+
+        # Label badge
+        _draw_canvas_label(pvx + 14.0, pvy + 14.0, f"Pivot ({CURRENT_PIVOT[0]},{CURRENT_PIVOT[1]})",
+                           align="left",
+                           text_color=(1.0, 0.55, 0.05),
+                           border_color=(1.0, 0.65, 0.20))
+
+    # ── 2. Draw Active / Saved Axis Line ────────────────────────────────
+    if CURRENT_AXIS is not None:
+        p1, p2 = CURRENT_AXIS
+        ax1, ay1 = p1[0] * GRID_SIZE, p1[1] * GRID_SIZE
+        ax2, ay2 = p2[0] * GRID_SIZE, p2[1] * GRID_SIZE
+        dx = ax2 - ax1
+        dy = ay2 - ay1
+        dlen = math.sqrt(dx * dx + dy * dy)
+        if dlen > 0:
+            ux, uy = dx / dlen, dy / dlen
+            ext = max(CURRENT_WIDTH, CURRENT_HEIGHT) * 2.0
+            gl.glColor4f(0.0, 0.0, 0.0, 0.90)
+            gl.glLineWidth(1.8)
+            _draw_styled_line(ax1 - ux * ext, ay1 - uy * ext, ax1 + ux * ext, ay1 + uy * ext, "Dashed", 1.8, "")
+            _draw_circle_filled_point(ax1, ay1, radius=4.0)
+            _draw_circle_filled_point(ax2, ay2, radius=4.0)
+            _draw_canvas_label(ax1 + 10, ay1 + 10, f"Axis P1({p1[0]},{p1[1]})", text_color=(0.0, 0.0, 0.0))
+            _draw_canvas_label(ax2 + 10, ay2 + 10, f"Axis P2({p2[0]},{p2[1]})", text_color=(0.0, 0.0, 0.0))
+
+    # ── 3. Live Preview while Picking Pivot on Canvas ───────────────────
+    if PICKING_PIVOT and current_mouse_grid is not None:
+        mx, my = current_mouse_grid
+        mpx, mpy = mx * GRID_SIZE, my * GRID_SIZE
+
+        # Live reticle following cursor
+        gl.glColor4f(1.0, 0.60, 0.05, 0.90)
+        gl.glLineWidth(1.8)
+        gl.glBegin(gl.GL_LINE_LOOP)
+        for i in range(24):
+            a = 2.0 * math.pi * i / 24
+            gl.glVertex2f(mpx + 8.5 * math.cos(a), mpy + 8.5 * math.sin(a))
+        gl.glEnd()
+        gl.glBegin(gl.GL_LINES)
+        gl.glVertex2f(mpx - 18.0, mpy)
+        gl.glVertex2f(mpx + 18.0, mpy)
+        gl.glVertex2f(mpx, mpy - 18.0)
+        gl.glVertex2f(mpx, mpy + 18.0)
+        gl.glEnd()
+        _draw_circle_filled_point(mpx, mpy, radius=2.5)
+
+        _draw_canvas_label(mpx + 14.0, mpy + 14.0, f"Click to set Pivot ({mx},{my})",
+                           align="left",
+                           text_color=(1.0, 0.60, 0.05),
+                           border_color=(1.0, 0.70, 0.20))
+
+    # ── 4. Live Preview while Picking Axis on Canvas ────────────────────
+    if PICKING_AXIS_STEP == 1 and current_mouse_grid is not None:
+        mx, my = current_mouse_grid
+        mpx, mpy = mx * GRID_SIZE, my * GRID_SIZE
+        gl.glColor4f(0.0, 0.0, 0.0, 0.90)
+        _draw_circle_filled_point(mpx, mpy, radius=4.0)
+        _draw_canvas_label(mpx + 14.0, mpy + 14.0, f"Click 1st point for Axis ({mx},{my})",
+                           align="left",
+                           text_color=(0.0, 0.0, 0.0))
+
+    elif PICKING_AXIS_STEP == 2 and current_mouse_grid is not None and AXIS_FIRST_POINT is not None:
+        mx, my = current_mouse_grid
+        mpx, mpy = mx * GRID_SIZE, my * GRID_SIZE
+        p1 = AXIS_FIRST_POINT
+        p1x, p1y = p1[0] * GRID_SIZE, p1[1] * GRID_SIZE
+
+        gl.glColor4f(0.0, 0.0, 0.0, 0.85)
+        gl.glLineWidth(1.8)
+        _draw_styled_line(p1x, p1y, mpx, mpy, "Dashed", 1.8, "")
+        _draw_circle_filled_point(p1x, p1y, radius=4.5)
+        _draw_circle_filled_point(mpx, mpy, radius=4.0)
+        _draw_canvas_label(mpx + 14.0, mpy + 14.0, f"Click 2nd point for Axis ({mx},{my})",
+                           align="left",
+                           text_color=(0.0, 0.0, 0.0))
+
+    gl.glLineWidth(1)
+    gl.glDisable(gl.GL_BLEND)
+    gl.glDisable(gl.GL_LINE_SMOOTH)
+
+
 def draw_endpoint_dumbbells():
     """
-    Draw snap preview indicators only when hovering near a connectable endpoint.
-    No permanent vertex markers are drawn so shapes and figures remain clean.
+    Draw dumbbell connector dots at connectable endpoints of all shapes,
+    and draw magnetic snap preview ring when hovering near an endpoint.
+    All dumbbell markers and snap rings stay constant screen-pixel size regardless of CANVAS_SCALE.
     """
+    inv_scale = 1.0 / CANVAS_SCALE
+
+    # 1. Dumbbell connector dots at all connectable endpoints
+    endpoints = _get_all_endpoints()
+    if endpoints:
+        gl.glEnable(gl.GL_BLEND)
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+        for (ex, ey) in set(endpoints):
+            wx = ex * GRID_SIZE
+            wy = ey * GRID_SIZE
+            # Subtle outer glow
+            gl.glColor4f(0.20, 0.60, 1.0, 0.35)
+            _draw_circle_filled_point(wx, wy, radius=SNAP_MARKER_RADIUS + 1.5)
+            # Solid dumbbell dot
+            gl.glColor4f(*SNAP_MARKER_COLOR, 0.85)
+            _draw_circle_filled_point(wx, wy, radius=SNAP_MARKER_RADIUS)
+            # White core dot
+            gl.glColor4f(1.0, 1.0, 1.0, 0.95)
+            _draw_circle_filled_point(wx, wy, radius=SNAP_MARKER_RADIUS * 0.4)
+
+    # 2. Magnetic snap hover indicator
     if current_mouse_grid is None:
         return
 
@@ -3006,19 +4476,22 @@ def draw_endpoint_dumbbells():
     gl.glEnable(gl.GL_BLEND)
     gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
 
+    ring_r = SNAP_HIGHLIGHT_RADIUS * inv_scale
+
     # Subtle snap indicator ring only when hovering near an endpoint
-    gl.glColor4f(*SNAP_HIGHLIGHT_COLOR, 0.65)
+    gl.glColor4f(*SNAP_HIGHLIGHT_COLOR, 0.85)
     gl.glLineWidth(2.0)
     gl.glBegin(gl.GL_LINE_LOOP)
     segments = 24
     for i in range(segments):
         angle = 2.0 * math.pi * i / segments
-        gl.glVertex2f(sx + SNAP_HIGHLIGHT_RADIUS * math.cos(angle),
-                      sy + SNAP_HIGHLIGHT_RADIUS * math.sin(angle))
+        gl.glVertex2f(sx + ring_r * math.cos(angle),
+                      sy + ring_r * math.sin(angle))
     gl.glEnd()
 
     # High-contrast snap indicator badge
-    _draw_canvas_label(sx + 14.0, sy + 14.0, f"Snap ({snap_pt[0]},{snap_pt[1]})",
+    label_off = 14.0 * inv_scale
+    _draw_canvas_label(sx + label_off, sy + label_off, f"Snap ({snap_pt[0]},{snap_pt[1]})",
                        align="left",
                        text_color=(0.95, 0.40, 0.05),
                        border_color=(1.0, 0.60, 0.20))
@@ -3212,6 +4685,81 @@ def draw_selected_points():
             else:
                 _draw_canvas_label(cx - 18.0, cy + 18.0, f"C({c[0]},{c[1]})")
 
+    elif is_polygon_build(CURRENT_ALGORITHM):
+        inv_scale = 1.0 / CANVAS_SCALE
+        if polygon_build_vertices:
+            gl.glEnable(gl.GL_LINE_SMOOTH)
+            gl.glEnable(gl.GL_BLEND)
+            gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+            gl.glHint(gl.GL_LINE_SMOOTH_HINT, gl.GL_NICEST)
+
+            # Draw smooth connected lines between placed vertices
+            gl.glColor3f(0.0, 0.82, 1.0)
+            gl.glLineWidth(CURRENT_LINE_WIDTH)
+            gl.glBegin(gl.GL_LINE_STRIP)
+            for vx, vy in polygon_build_vertices:
+                gl.glVertex2f(vx * GRID_SIZE, vy * GRID_SIZE)
+            gl.glEnd()
+
+            # Dynamic rubberband line from last vertex to current mouse
+            if current_mouse_grid is not None:
+                last_v = polygon_build_vertices[-1]
+                lx, ly = last_v[0] * GRID_SIZE, last_v[1] * GRID_SIZE
+                mx, my = current_mouse_grid[0] * GRID_SIZE, current_mouse_grid[1] * GRID_SIZE
+
+                # Check if near first vertex (close polygon hint)
+                can_close = len(polygon_build_vertices) >= 3
+                first_v = polygon_build_vertices[0]
+                fx, fy = first_v[0] * GRID_SIZE, first_v[1] * GRID_SIZE
+                d_first = math.sqrt((mx - fx)**2 + (my - fy)**2)
+
+                if can_close and d_first <= SNAP_DISTANCE_PIXELS * inv_scale:
+                    # Highlight close edge to first vertex in bright green
+                    gl.glColor4f(0.0, 1.0, 0.5, 0.95)
+                    gl.glLineWidth(2.0)
+                    gl.glBegin(gl.GL_LINES)
+                    gl.glVertex2f(lx, ly)
+                    gl.glVertex2f(fx, fy)
+                    gl.glEnd()
+
+                    # Close polygon badge
+                    _draw_canvas_label(fx + 16.0 * inv_scale, fy + 16.0 * inv_scale,
+                                       "Click or Enter to Close Polygon",
+                                       text_color=(0.0, 0.9, 0.4),
+                                       border_color=(0.0, 1.0, 0.5))
+                else:
+                    # Smooth rubberband line to cursor
+                    gl.glColor4f(0.0, 0.75, 1.0, 0.70)
+                    gl.glLineWidth(1.5)
+                    _draw_styled_line(lx, ly, mx, my, "Dashed", 1.5, "")
+
+                    # Length badge along edge
+                    dx_g = current_mouse_grid[0] - last_v[0]
+                    dy_g = current_mouse_grid[1] - last_v[1]
+                    edge_len = int(round_half_up(math.sqrt(dx_g * dx_g + dy_g * dy_g)))
+                    _draw_canvas_label(lx + 0.5 * (mx - lx) + 12.0 * inv_scale,
+                                       ly + 0.5 * (my - ly) + 12.0 * inv_scale,
+                                       f"len={edge_len}",
+                                       text_color=(0.10, 0.65, 0.95))
+
+            # Dumbbell dots at placed vertices (constant screen size!)
+            for i, (vx, vy) in enumerate(polygon_build_vertices):
+                wx, wy = vx * GRID_SIZE, vy * GRID_SIZE
+                if i == 0:
+                    # First vertex: prominent anchor dot
+                    gl.glColor4f(0.0, 1.0, 0.5, 0.95)
+                    _draw_circle_filled_point(wx, wy, radius=SNAP_MARKER_RADIUS + 2.0)
+                    gl.glColor4f(0.0, 0.2, 0.1, 1.0)
+                    _draw_circle_filled_point(wx, wy, radius=SNAP_MARKER_RADIUS * 0.5)
+                    _draw_canvas_label(wx - 14.0 * inv_scale, wy - 14.0 * inv_scale,
+                                       f"Start ({vx},{vy})",
+                                       text_color=(0.0, 0.85, 0.4))
+                else:
+                    gl.glColor4f(0.0, 0.82, 1.0, 0.95)
+                    _draw_circle_filled_point(wx, wy, radius=SNAP_MARKER_RADIUS)
+                    gl.glColor4f(1.0, 1.0, 1.0, 1.0)
+                    _draw_circle_filled_point(wx, wy, radius=SNAP_MARKER_RADIUS * 0.4)
+
     else:
         # Line drawing preview
         if len(selected_points) == 1 and current_mouse_grid is not None:
@@ -3225,13 +4773,14 @@ def draw_selected_points():
             _draw_circle_filled_point(mx, my, radius=3)
 
 
-    # ── 2. Draw red marker dots at clicked anchor points ────────────────────
+    # ── 2. Draw red marker dots at clicked anchor points (constant screen size) ─────
     if selected_points:
+        inv_scale = 1.0 / CANVAS_SCALE
+        r = POINT_MARKER_RADIUS * inv_scale
         gl.glColor3f(*POINT_MARKER_COLOR)
         for (gx, gy) in selected_points:
             cx = gx * GRID_SIZE
             cy = gy * GRID_SIZE
-            r = POINT_MARKER_RADIUS
 
             # Filled circle
             gl.glBegin(gl.GL_POLYGON)
@@ -3246,7 +4795,8 @@ def draw_selected_points():
             gl.glBegin(gl.GL_LINE_LOOP)
             for angle_deg in range(0, 360, 15):
                 rad = math.radians(angle_deg)
-                gl.glVertex2f(cx + (r + 1) * math.cos(rad), cy + (r + 1) * math.sin(rad))
+                gl.glVertex2f(cx + (r + 1.0 * inv_scale) * math.cos(rad),
+                              cy + (r + 1.0 * inv_scale) * math.sin(rad))
             gl.glEnd()
 
             # Reset color
@@ -3282,11 +4832,18 @@ def draw_canvas():
     # Draw all user lines
     draw_lines_on_canvas()
 
+    # Draw selection highlights for shapes and polygons
+    draw_selection_highlights()
+
+    # Draw pivot and axis markers and live previews
+    draw_pivot_and_axis_markers()
+
     # Draw dumbbell snap markers at connectable endpoints
     draw_endpoint_dumbbells()
 
     # Draw pending selected points
     draw_selected_points()
+
 
 
 # ============================================================================
@@ -3387,7 +4944,16 @@ def draw_menu():
         draw_menu_text(text_x, text_y, item, MENU_TEXT_COLOR)
 
     # Draw status bar text showing current settings
-    if is_ellipse_algorithm(CURRENT_ALGORITHM):
+    if is_polygon_build(CURRENT_ALGORITHM):
+        n = len(polygon_build_vertices)
+        if n == 0:
+            click_hint = "Click 1st vertex on canvas to begin polygon"
+        elif n < 3:
+            click_hint = f"{n} vertex placed. Click next vertex"
+        else:
+            click_hint = f"{n} vertices placed. Click to add, or press Enter / click start to close"
+        status = f"  Polygon Build | {CURRENT_COLOR} | Width:{CURRENT_LINE_WIDTH} | {click_hint}"
+    elif is_ellipse_algorithm(CURRENT_ALGORITHM):
         if len(selected_points) == 0:
             click_hint = "Click to set centre"
         elif len(selected_points) == 1:
@@ -3434,6 +5000,312 @@ def draw_menu():
         status = f"  {CURRENT_ALGORITHM} | {CURRENT_COLOR} | Width:{CURRENT_LINE_WIDTH} | {style_display}"
     draw_menu_text(5, MENU_HEIGHT - 6, status, (0.55, 0.55, 0.55))
 
+    # ── Select Tool Toggle Pill (Right side of status bar) ───────────────
+    pill_w = 220
+    pill_right = CURRENT_WIDTH - 12
+    pill_left = pill_right - pill_w
+    pill_top = MENU_BUTTON_HEIGHT + 3
+    pill_bot = MENU_HEIGHT - 3
+
+    if SELECT_MODE:
+        gl.glColor4f(0.12, 0.38, 0.58, 0.95)
+    else:
+        gl.glColor4f(0.25, 0.25, 0.28, 0.85)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(pill_left, pill_top)
+    gl.glVertex2f(pill_right, pill_top)
+    gl.glVertex2f(pill_right, pill_bot)
+    gl.glVertex2f(pill_left, pill_bot)
+    gl.glEnd()
+
+    if SELECT_MODE:
+        gl.glColor3f(0.35, 0.78, 1.0)
+    else:
+        gl.glColor3f(0.42, 0.42, 0.46)
+    gl.glLineWidth(1.3)
+    gl.glBegin(gl.GL_LINE_LOOP)
+    gl.glVertex2f(pill_left, pill_top)
+    gl.glVertex2f(pill_right, pill_top)
+    gl.glVertex2f(pill_right, pill_bot)
+    gl.glVertex2f(pill_left, pill_bot)
+    gl.glEnd()
+
+    valid_sel = [i for i in SELECTED_SHAPE_INDICES if 0 <= i < len(drawn_lines)]
+    summary_str = _get_selection_summary()
+    if SELECT_MODE:
+        if valid_sel:
+            disp_summary = summary_str if len(summary_str) <= 15 else f"{len(valid_sel)} items"
+            pill_txt = f"[✓] Select ({disp_summary})"
+        else:
+            pill_txt = "[✓] Select Tool"
+        pill_col = (0.95, 0.95, 1.0)
+    else:
+        if valid_sel:
+            disp_summary = summary_str if len(summary_str) <= 15 else f"{len(valid_sel)} items"
+            pill_txt = f"Select Tool (S) [{disp_summary}]"
+        else:
+            pill_txt = "Select Tool (S)"
+        pill_col = (0.75, 0.75, 0.80)
+
+    draw_menu_text(pill_left + 12, MENU_HEIGHT - 6, pill_txt, pill_col)
+
+    # ── Top Banner for Active Interactive Modes ──────────────────────────
+    banner_msg = None
+    banner_border = (0.3, 0.6, 0.9)
+    banner_bg = (0.12, 0.15, 0.20, 0.92)
+
+    if PICKING_PIVOT:
+        banner_msg = "⊕ PIVOT SELECTION: Click on canvas to set Pivot Point (Enter: (0,0), Esc: cancel)"
+        banner_border = (1.0, 0.65, 0.10)
+        banner_bg = (0.22, 0.14, 0.05, 0.95)
+    elif PICKING_AXIS_STEP == 1:
+        banner_msg = "⊕ AXIS SELECTION: Click 1st point for Reflection Axis on canvas (Esc: cancel)"
+        banner_border = (0.85, 0.35, 0.85)
+        banner_bg = (0.20, 0.08, 0.22, 0.95)
+    elif PICKING_AXIS_STEP == 2:
+        banner_msg = "⊕ AXIS SELECTION: Click 2nd point for Reflection Axis on canvas (Esc: cancel)"
+        banner_border = (0.85, 0.35, 0.85)
+        banner_bg = (0.20, 0.08, 0.22, 0.95)
+    elif SELECT_MODE:
+        banner_msg = f"⇖ SELECT MODE: Click or Drag box to multi-select ({summary_str}). 'A': all, 'Esc': clear, 'S': exit."
+        banner_border = (0.0, 0.80, 1.0)
+        banner_bg = (0.08, 0.18, 0.28, 0.95)
+
+    if banner_msg is not None:
+        bw = len(banner_msg) * 7.5 + 30
+        bx_left = (CURRENT_WIDTH - bw) / 2
+        bx_right = bx_left + bw
+        by_top = MENU_HEIGHT + 8
+        by_bot = by_top + 26
+
+        gl.glColor4f(*banner_bg)
+        gl.glBegin(gl.GL_QUADS)
+        gl.glVertex2f(bx_left, by_top)
+        gl.glVertex2f(bx_right, by_top)
+        gl.glVertex2f(bx_right, by_bot)
+        gl.glVertex2f(bx_left, by_bot)
+        gl.glEnd()
+
+        gl.glColor3f(*banner_border)
+        gl.glLineWidth(1.5)
+        gl.glBegin(gl.GL_LINE_LOOP)
+        gl.glVertex2f(bx_left, by_top)
+        gl.glVertex2f(bx_right, by_top)
+        gl.glVertex2f(bx_right, by_bot)
+        gl.glVertex2f(bx_left, by_bot)
+        gl.glEnd()
+
+        draw_menu_text(bx_left + 15, by_top + 18, banner_msg, (1.0, 1.0, 1.0))
+
+    gl.glLineWidth(1)
+# ============================================================================
+# Canvas Scale Slider Dropdown Panel
+# ============================================================================
+
+def _handle_scale_slider_click(x, y):
+    """
+    Handle mouse clicks on the Canvas Scale slider panel.
+    Returns True if click was consumed.
+    """
+    global OPEN_MENU, IS_DRAGGING_SCALE_SLIDER
+
+    panel_x, panel_y, panel_w, panel_h = _get_scale_slider_bounds()
+
+    # If click is outside the panel, it is not consumed here
+    if not (panel_x <= x <= panel_x + panel_w and panel_y <= y <= panel_y + panel_h):
+        return False
+
+    # Slider Track & Thumb Click/Drag Zone (generous hit area)
+    track_y = panel_y + 54
+    if (panel_x + 10 <= x <= panel_x + panel_w - 10) and (track_y - 15 <= y <= track_y + 25):
+        IS_DRAGGING_SCALE_SLIDER = True
+        _update_scale_from_slider_x(x)
+        glut.glutPostRedisplay()
+        return True
+
+    # Any other click inside the card is consumed to prevent click-through
+    return True
+
+
+def draw_scale_slider_panel(panel_x, panel_y):
+    """
+    Render a clean, modern Canvas Scale slider dropdown panel containing strictly the slider.
+    Features:
+      - Live percentage badge in header
+      - Smooth gradient slider track with 100% center notch & thumb handle
+      - Min / 100% / Max scale reference labels
+    """
+    global CANVAS_SCALE, IS_DRAGGING_SCALE_SLIDER
+
+    panel_w = 260
+    panel_h = 100
+
+    gl.glEnable(gl.GL_BLEND)
+    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+
+    # ── 1. Drop Shadow ───────────────────────────────────────────────────
+    gl.glColor4f(0.0, 0.0, 0.0, 0.45)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(panel_x + 6, panel_y + 6)
+    gl.glVertex2f(panel_x + panel_w + 6, panel_y + 6)
+    gl.glVertex2f(panel_x + panel_w + 6, panel_y + panel_h + 6)
+    gl.glVertex2f(panel_x + 6, panel_y + panel_h + 6)
+    gl.glEnd()
+
+    # ── 2. Card Background & Subtle Border ───────────────────────────────
+    gl.glColor4f(0.10, 0.11, 0.16, 0.98)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(panel_x, panel_y)
+    gl.glVertex2f(panel_x + panel_w, panel_y)
+    gl.glVertex2f(panel_x + panel_w, panel_y + panel_h)
+    gl.glVertex2f(panel_x, panel_y + panel_h)
+    gl.glEnd()
+
+    gl.glColor4f(0.24, 0.28, 0.38, 0.95)
+    gl.glLineWidth(1.2)
+    gl.glBegin(gl.GL_LINE_LOOP)
+    gl.glVertex2f(panel_x, panel_y)
+    gl.glVertex2f(panel_x + panel_w, panel_y)
+    gl.glVertex2f(panel_x + panel_w, panel_y + panel_h)
+    gl.glVertex2f(panel_x, panel_y + panel_h)
+    gl.glEnd()
+
+    # ── 3. Header Bar ────────────────────────────────────────────────────
+    hdr_h = 32
+    gl.glColor4f(0.14, 0.16, 0.23, 0.98)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(panel_x + 1, panel_y + 1)
+    gl.glVertex2f(panel_x + panel_w - 1, panel_y + 1)
+    gl.glVertex2f(panel_x + panel_w - 1, panel_y + hdr_h)
+    gl.glVertex2f(panel_x + 1, panel_y + hdr_h)
+    gl.glEnd()
+
+    gl.glColor4f(0.20, 0.24, 0.34, 0.90)
+    gl.glLineWidth(1.0)
+    gl.glBegin(gl.GL_LINES)
+    gl.glVertex2f(panel_x, panel_y + hdr_h)
+    gl.glVertex2f(panel_x + panel_w, panel_y + hdr_h)
+    gl.glEnd()
+
+    # Header Title
+    draw_menu_text(panel_x + 14, panel_y + 21, "Canvas Scale", (0.90, 0.92, 0.96))
+
+    # Header Live Scale Badge (Pill)
+    badge_w = 64
+    badge_h = 20
+    badge_x = panel_x + panel_w - 14 - badge_w
+    badge_y = panel_y + 6
+    gl.glColor4f(0.12, 0.24, 0.36, 0.95)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(badge_x, badge_y)
+    gl.glVertex2f(badge_x + badge_w, badge_y)
+    gl.glVertex2f(badge_x + badge_w, badge_y + badge_h)
+    gl.glVertex2f(badge_x, badge_y + badge_h)
+    gl.glEnd()
+
+    gl.glColor4f(0.25, 0.55, 0.85, 0.90)
+    gl.glLineWidth(1.0)
+    gl.glBegin(gl.GL_LINE_LOOP)
+    gl.glVertex2f(badge_x, badge_y)
+    gl.glVertex2f(badge_x + badge_w, badge_y)
+    gl.glVertex2f(badge_x + badge_w, badge_y + badge_h)
+    gl.glVertex2f(badge_x, badge_y + badge_h)
+    gl.glEnd()
+
+    pct_str = f"{CANVAS_SCALE * 100:.0f}%"
+    tw = len(pct_str) * 7.5
+    draw_menu_text(badge_x + (badge_w - tw) / 2.0, badge_y + 14, pct_str, (0.35, 0.88, 1.0))
+
+    # ── 4. Slider Track & Thumb ──────────────────────────────────────────
+    track_x1 = panel_x + 18
+    track_x2 = panel_x + panel_w - 18
+    track_w = track_x2 - track_x1
+    track_y = panel_y + 54
+    track_h = 8
+
+    # Background Track
+    gl.glColor4f(0.18, 0.20, 0.27, 0.95)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(track_x1, track_y)
+    gl.glVertex2f(track_x2, track_y)
+    gl.glVertex2f(track_x2, track_y + track_h)
+    gl.glVertex2f(track_x1, track_y + track_h)
+    gl.glEnd()
+
+    # Track Border
+    gl.glColor4f(0.26, 0.29, 0.38, 0.90)
+    gl.glLineWidth(1.0)
+    gl.glBegin(gl.GL_LINE_LOOP)
+    gl.glVertex2f(track_x1, track_y)
+    gl.glVertex2f(track_x2, track_y)
+    gl.glVertex2f(track_x2, track_y + track_h)
+    gl.glVertex2f(track_x1, track_y + track_h)
+    gl.glEnd()
+
+    # Calculate Thumb Position
+    t = _scale_to_slider_t(CANVAS_SCALE)
+    thumb_x = track_x1 + t * track_w
+    thumb_y = track_y + track_h / 2.0
+
+    # Filled Active Track
+    if thumb_x > track_x1:
+        gl.glColor4f(0.22, 0.65, 0.95, 0.95)
+        gl.glBegin(gl.GL_QUADS)
+        gl.glVertex2f(track_x1, track_y)
+        gl.glVertex2f(thumb_x, track_y)
+        gl.glVertex2f(thumb_x, track_y + track_h)
+        gl.glVertex2f(track_x1, track_y + track_h)
+        gl.glEnd()
+
+    # 100% Center Notch Mark (at t = 0.5)
+    notch_x = track_x1 + track_w * 0.5
+    gl.glColor4f(0.85, 0.88, 0.95, 0.90)
+    gl.glLineWidth(1.5)
+    gl.glBegin(gl.GL_LINES)
+    gl.glVertex2f(notch_x, track_y - 3)
+    gl.glVertex2f(notch_x, track_y + track_h + 3)
+    gl.glEnd()
+
+    # Labels below track
+    lbl_y = track_y + 22
+    gl.glColor3f(0.55, 0.58, 0.66)
+    gl.glRasterPos2f(track_x1, lbl_y)
+    for ch in "25%":
+        glut.glutBitmapCharacter(glut.GLUT_BITMAP_HELVETICA_10, ord(ch))
+
+    gl.glColor3f(0.72, 0.76, 0.84)
+    gl.glRasterPos2f(notch_x - 12, lbl_y)
+    for ch in "100%":
+        glut.glutBitmapCharacter(glut.GLUT_BITMAP_HELVETICA_10, ord(ch))
+
+    gl.glColor3f(0.55, 0.58, 0.66)
+    gl.glRasterPos2f(track_x2 - 28, lbl_y)
+    for ch in "500%":
+        glut.glutBitmapCharacter(glut.GLUT_BITMAP_HELVETICA_10, ord(ch))
+
+    # Draw Thumb Handle
+    if IS_DRAGGING_SCALE_SLIDER:
+        gl.glColor4f(0.20, 0.65, 1.0, 0.30)
+        _draw_ui_circle_filled(thumb_x, thumb_y, radius=12, segments=24)
+
+    gl.glColor4f(0.96, 0.97, 1.0, 1.0)
+    _draw_ui_circle_filled(thumb_x, thumb_y, radius=8, segments=20)
+
+    gl.glColor4f(0.20, 0.60, 0.95, 1.0)
+    gl.glLineWidth(1.6)
+    gl.glBegin(gl.GL_LINE_LOOP)
+    for i in range(20):
+        theta = 2.0 * math.pi * i / 20.0
+        gl.glVertex2f(thumb_x + 8.0 * math.cos(theta),
+                      thumb_y + 8.0 * math.sin(theta))
+    gl.glEnd()
+
+    gl.glColor4f(0.18, 0.50, 0.85, 1.0)
+    _draw_ui_circle_filled(thumb_x, thumb_y, radius=3.2, segments=16)
+
+    gl.glDisable(gl.GL_BLEND)
+
+
 
 def draw_dropdown():
     """
@@ -3441,6 +5313,12 @@ def draw_dropdown():
     """
 
     if OPEN_MENU is None:
+        return
+
+    # ── Canvas Scale: render dedicated slider panel ─────────────────────
+    if OPEN_MENU == "Canvas Scale":
+        panel_x, panel_y, _, _ = _get_scale_slider_bounds()
+        draw_scale_slider_panel(panel_x, panel_y)
         return
 
     # Get dropdown items
@@ -3477,7 +5355,7 @@ def draw_dropdown():
 
         # Highlight active selection
         is_active = False
-        if OPEN_MENU == "Line Drawing Algorithm" and item == CURRENT_ALGORITHM:
+        if OPEN_MENU == "Algorithms" and item == CURRENT_ALGORITHM:
             is_active = True
         elif OPEN_MENU == "Line Parameters":
             if item == "Color" and OPEN_SUB_MENU == "Color":
@@ -3491,6 +5369,10 @@ def draw_dropdown():
             elif item == "Dashed Line" and CURRENT_LINE_STYLE == "Dashed":
                 is_active = True
             elif item == "User Defined" and CURRENT_LINE_STYLE == "UserDefined":
+                is_active = True
+        elif OPEN_MENU == "Canvas Scale":
+            current_pct = f"{CANVAS_SCALE * 100:.0f}%"
+            if item == current_pct:
                 is_active = True
 
         if is_active:
@@ -4060,8 +5942,8 @@ def draw_transform_dialog():
     gl.glEnd()
 
     # ── Dialog box dimensions ────────────────────────────────────────────
-    dialog_w = 460
-    dialog_h = 60 + num_fields * 60 + 100
+    dialog_w = 540 if TRANSFORM_DIALOG_TYPE == "Multi Operation" else 460
+    dialog_h = 240 if TRANSFORM_DIALOG_TYPE == "Multi Operation" else (60 + num_fields * 60 + 100)
     dlg_left   = (CURRENT_WIDTH - dialog_w) / 2
     dlg_right  = dlg_left + dialog_w
     dlg_top    = (CURRENT_HEIGHT - dialog_h) / 2
@@ -4097,7 +5979,10 @@ def draw_transform_dialog():
     gl.glEnd()
 
     # ── Title ────────────────────────────────────────────────────────────
-    title = f"2D {TRANSFORM_DIALOG_TYPE}"
+    if TRANSFORM_DIALOG_TYPE == "Multi Operation":
+        title = "Composite Multi-Operation Pipeline"
+    else:
+        title = f"2D {TRANSFORM_DIALOG_TYPE}"
     title_x = dlg_left + (dialog_w - len(title) * 9) / 2
     title_y = dlg_top + 28
     gl.glColor3f(0.95, 0.95, 0.98)
@@ -4126,6 +6011,7 @@ def draw_transform_dialog():
         "axis_y1": ("Axis Y1", "First point on the reflection axis"),
         "axis_x2": ("Axis X2", "Second point on the reflection axis"),
         "axis_y2": ("Axis Y2", "Second point on the reflection axis"),
+        "pipeline": ("Pipeline", "e.g. T:2,2;R:30;RE:y=mx+3 (T=Trans, R=Rot, S=Scale, RE=Reflect)"),
     }
     field_placeholders = {
         "tx": "0", "ty": "0",
@@ -4134,6 +6020,7 @@ def draw_transform_dialog():
         "pivot_x": "0", "pivot_y": "0",
         "axis_x1": "0", "axis_y1": "0",
         "axis_x2": "1", "axis_y2": "0",
+        "pipeline": "",
     }
 
     # ── Draw each input field ────────────────────────────────────────────
@@ -4181,7 +6068,10 @@ def draw_transform_dialog():
         text_y = field_y_top + 20
         if field_value:
             gl.glColor3f(0.98, 0.98, 1.0)
-            display_text = field_value
+            if len(field_value) > 46:
+                display_text = "..." + field_value[-43:]
+            else:
+                display_text = field_value
         else:
             gl.glColor3f(0.42, 0.44, 0.50)
             display_text = placeholder
@@ -4192,7 +6082,8 @@ def draw_transform_dialog():
 
         # Blinking cursor for active field
         if is_active and TRANSFORM_DIALOG_CURSOR_BLINK < 35:
-            cursor_x = input_left + 10 + len(field_value) * 7.5
+            vis_len = len(display_text) if field_value else 0
+            cursor_x = input_left + 10 + vis_len * 7.5
             gl.glColor3f(0.90, 0.90, 0.98)
             gl.glLineWidth(1.5)
             gl.glBegin(gl.GL_LINES)
@@ -4211,6 +6102,8 @@ def draw_transform_dialog():
         hint = "Scales, then rotates around the pivot. Enter applies; Esc cancels."
     elif TRANSFORM_DIALOG_TYPE == "Transform About an Axis":
         hint = "Reflects across the line through the two axis points. Enter applies; Esc cancels."
+    elif TRANSFORM_DIALOG_TYPE == "Multi Operation":
+        hint = "T=Translate, R=Rotate, S=Scale, RE=Reflect. Enter to Apply, Esc to Cancel."
     else:
         hint = "Enter to apply, Esc to cancel. Reference: Canvas Origin (0, 0)."
     hint_y = dlg_top + 55 + num_fields * 60 + 18
@@ -4253,6 +6146,79 @@ def draw_transform_dialog():
     for ch in "Cancel":
         glut.glutBitmapCharacter(glut.GLUT_BITMAP_HELVETICA_12, ord(ch))
 
+    # Pick on Canvas button (for Transform About a Point or Axis)
+    if TRANSFORM_DIALOG_TYPE in ("Transform About a Point", "Transform About an Axis"):
+        pick_btn_w = 140
+        pick_btn_left = cancel_btn_left - 12 - pick_btn_w
+        gl.glColor3f(0.18, 0.48, 0.50)
+        gl.glBegin(gl.GL_QUADS)
+        gl.glVertex2f(pick_btn_left, btn_y_top)
+        gl.glVertex2f(pick_btn_left + pick_btn_w, btn_y_top)
+        gl.glVertex2f(pick_btn_left + pick_btn_w, btn_y_bot)
+        gl.glVertex2f(pick_btn_left, btn_y_bot)
+        gl.glEnd()
+        gl.glColor3f(1.0, 1.0, 1.0)
+        btn_lbl = "Pick Pivot" if TRANSFORM_DIALOG_TYPE == "Transform About a Point" else "Pick Axis"
+        gl.glRasterPos2f(pick_btn_left + 24, btn_y_top + 21)
+        for ch in f"Pick on Canvas":
+            glut.glutBitmapCharacter(glut.GLUT_BITMAP_HELVETICA_12, ord(ch))
+
+    gl.glDisable(gl.GL_BLEND)
+
+
+def draw_selection_box():
+    """Draw the interactive marquee selection box when dragging with Select Tool."""
+    global SELECT_BOX_ACTIVE, SELECT_BOX_DRAGGED, SELECT_BOX_START, SELECT_BOX_CURRENT
+    if not (SELECT_BOX_ACTIVE and SELECT_BOX_DRAGGED):
+        return
+
+    x1, y1 = SELECT_BOX_START
+    x2, y2 = SELECT_BOX_CURRENT
+    bx_min, bx_max = min(x1, x2), max(x1, x2)
+    by_min, by_max = min(y1, y2), max(y1, y2)
+
+    gl.glEnable(gl.GL_BLEND)
+    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+
+    # Semi-transparent cyan fill
+    gl.glColor4f(0.0, 0.70, 1.0, 0.12)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(bx_min, by_min)
+    gl.glVertex2f(bx_max, by_min)
+    gl.glVertex2f(bx_max, by_max)
+    gl.glVertex2f(bx_min, by_max)
+    gl.glEnd()
+
+    # Border
+    gl.glColor4f(0.0, 0.85, 1.0, 0.85)
+    gl.glLineWidth(1.5)
+    gl.glBegin(gl.GL_LINE_LOOP)
+    gl.glVertex2f(bx_min, by_min)
+    gl.glVertex2f(bx_max, by_min)
+    gl.glVertex2f(bx_max, by_max)
+    gl.glVertex2f(bx_min, by_max)
+    gl.glEnd()
+
+    # Corner accent ticks
+    tick_len = min(8.0, (bx_max - bx_min) / 2.0, (by_max - by_min) / 2.0)
+    if tick_len > 2.0:
+        gl.glColor4f(1.0, 1.0, 1.0, 0.90)
+        gl.glLineWidth(2.0)
+        gl.glBegin(gl.GL_LINES)
+        # Top-left
+        gl.glVertex2f(bx_min, by_min); gl.glVertex2f(bx_min + tick_len, by_min)
+        gl.glVertex2f(bx_min, by_min); gl.glVertex2f(bx_min, by_min + tick_len)
+        # Top-right
+        gl.glVertex2f(bx_max, by_min); gl.glVertex2f(bx_max - tick_len, by_min)
+        gl.glVertex2f(bx_max, by_min); gl.glVertex2f(bx_max, by_min + tick_len)
+        # Bottom-right
+        gl.glVertex2f(bx_max, by_max); gl.glVertex2f(bx_max - tick_len, by_max)
+        gl.glVertex2f(bx_max, by_max); gl.glVertex2f(bx_max, by_max - tick_len)
+        # Bottom-left
+        gl.glVertex2f(bx_min, by_max); gl.glVertex2f(bx_min + tick_len, by_max)
+        gl.glVertex2f(bx_min, by_max); gl.glVertex2f(bx_min, by_max - tick_len)
+        gl.glEnd()
+
     gl.glDisable(gl.GL_BLEND)
 
 
@@ -4284,11 +6250,12 @@ def display():
 
     setup_menu_projection()
 
+    draw_selection_box()
     draw_menu()
     draw_dropdown()
 
     # ------------------------------------------------------------------------
-    # Save Dialog (drawn last, on top of everything)
+    # Dialogs (drawn last, on top of everything)
     # ------------------------------------------------------------------------
 
     draw_save_dialog()
@@ -4350,7 +6317,7 @@ def run():
     )
 
     glut.glutCreateWindow(
-        "Line Drawing Algorithm"
+        "Algorithms"
     )
 
     # ------------------------------------------------------------------------
@@ -4370,6 +6337,7 @@ def run():
     glut.glutKeyboardFunc(keyboard)
     glut.glutSpecialFunc(special_keyboard)
     glut.glutMouseFunc(mouse)
+    glut.glutMotionFunc(motion)
     glut.glutPassiveMotionFunc(passive_motion)
 
     # ------------------------------------------------------------------------
@@ -4384,6 +6352,8 @@ def run():
     print("Click two points on the canvas to draw a line.")
     print("For Mid Point Circle: click centre, then a point to define the radius.")
     print("For Mid Point Ellipse: click centre, then rx point, then ry point.")
+    print("Zoom: '+' / '-' / '0' keys, mouse wheel, or Canvas Scale menu.")
+    print("Pan: Right-click drag or middle-click drag.")
     print("Press 'P' to save a screenshot to output/")
     print("Press 'Esc' to exit.")
 

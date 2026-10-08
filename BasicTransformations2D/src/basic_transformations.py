@@ -602,4 +602,18 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if any(arg in sys.argv for arg in ("--headless", "--generate-outputs", "--batch", "--examples")):
+        main()
+    else:
+        import os
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        if repo_root not in sys.path:
+            sys.path.append(repo_root)
+
+        from app.src import line_drawing_app as lda
+
+        # Set default algorithm to Polygon Build for transformation experiments
+        lda.CURRENT_ALGORITHM = "Polygon Build"
+
+        print("[Info] Opening application window (clean canvas) for Basic Transformations.")
+        lda.run()

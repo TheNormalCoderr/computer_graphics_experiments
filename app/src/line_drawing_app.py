@@ -83,6 +83,7 @@ ALGORITHM_ITEMS = [
     "Mid Point Circle",
     "Mid Point Ellipse",
     "Polygon Build",
+    "Point Clipping",
     "Filling Algorithms",
 ]
 
@@ -357,6 +358,23 @@ CURRENT_LINE_STYLE = "Solid"   # "Solid", "Dotted", "Dashed", "UserDefined"
 selected_points = []    # list of (x_world, y_world)
 current_mouse_grid = None # (gx, gy) of current mouse position
 
+# ── Point Clipping State ────────────────────────────────────────────────────
+POINT_CLIPPING_WINDOW = {
+    "xmin": "-80",
+    "ymin": "-60",
+    "xmax": "80",
+    "ymax": "60",
+}
+POINT_CLIPPING_INPUT_PT = {
+    "px": "",
+    "py": "",
+}
+POINT_CLIPPING_ACTIVE_FIELD = 0  # 0: xmin, 1: ymin, 2: xmax, 3: ymax, 4: px, 5: py
+POINT_CLIPPING_FIELD_ORDER = ["xmin", "ymin", "xmax", "ymax", "px", "py"]
+POINT_CLIPPING_POINTS = []       # list of dicts: {"x": float, "y": float, "accepted": bool}
+POINT_CLIPPING_LAST_RESULT = None  # (x, y, accepted)
+POINT_CLIPPING_CURSOR_BLINK = 0
+
 # All drawn shapes (lines, circles, and ellipses, persisted until Clear)
 # Line entry: {
 #   "type": "line",
@@ -494,7 +512,7 @@ SNAP_HIGHLIGHT_RADIUS = 9     # pixel radius for the hover highlight ring
 
 
 # ============================================================================
-# Minimal PNG writer (same pattern as DDA files)
+# Minimal PNG writer
 # ============================================================================
 
 def _write_png(filepath, width, height, rgb_rows):
@@ -564,6 +582,62 @@ def is_ellipse_algorithm(algorithm):
 def is_polygon_build(algorithm):
     """Return True if the algorithm is the Polygon Build (smooth line) mode."""
     return algorithm == "Polygon Build"
+
+
+def is_point_clipping_algorithm(algorithm):
+    """Return True if active algorithm is 2D Point Clipping."""
+    return algorithm == "Point Clipping"
+
+
+def _get_clipping_bounds():
+    """Parse and return (xmin, ymin, xmax, ymax) as floats, properly ordered."""
+    def _parse(k, def_val):
+        try:
+            s = str(POINT_CLIPPING_WINDOW.get(k, "")).strip()
+            if s in ("", "-", "+", ".", "-.", "+."):
+                return float(def_val)
+            return float(s)
+        except (ValueError, TypeError):
+            return float(def_val)
+
+    xmin = _parse("xmin", -80.0)
+    ymin = _parse("ymin", -60.0)
+    xmax = _parse("xmax", 80.0)
+    ymax = _parse("ymax", 60.0)
+    if xmin > xmax:
+        xmin, xmax = xmax, xmin
+    if ymin > ymax:
+        ymin, ymax = ymax, ymin
+    return xmin, ymin, xmax, ymax
+
+
+def test_clip_point(px, py):
+    """Test point (px, py) against the current clipping window and store the result."""
+    global POINT_CLIPPING_LAST_RESULT
+    xmin, ymin, xmax, ymax = _get_clipping_bounds()
+    accepted = (xmin <= px <= xmax) and (ymin <= py <= ymax)
+    entry = {"x": float(px), "y": float(py), "accepted": accepted}
+    POINT_CLIPPING_POINTS.append(entry)
+    POINT_CLIPPING_LAST_RESULT = (float(px), float(py), accepted)
+    status_str = "ACCEPTED [Inside]" if accepted else "REJECTED [Outside]"
+    print(f"[Point Clipping] Point ({int(round_half_up(px))}, {int(round_half_up(py))}) against window [{int(round_half_up(xmin))}, {int(round_half_up(ymin))}] to [{int(round_half_up(xmax))}, {int(round_half_up(ymax))}] -> {status_str}")
+    return accepted
+
+
+def _confirm_clip_input_point():
+    """Clip point coordinates typed in the input section."""
+    px_str = str(POINT_CLIPPING_INPUT_PT.get("px", "")).strip()
+    py_str = str(POINT_CLIPPING_INPUT_PT.get("py", "")).strip()
+    try:
+        px = float(px_str) if px_str not in ("", "-", "+", ".") else 0.0
+    except ValueError:
+        px = 0.0
+    try:
+        py = float(py_str) if py_str not in ("", "-", "+", ".") else 0.0
+    except ValueError:
+        py = 0.0
+    test_clip_point(int(round_half_up(px)), int(round_half_up(py)))
+    glut.glutPostRedisplay()
 
 
 # State for polygon building (smooth multi-vertex polygon)
@@ -822,6 +896,55 @@ def keyboard(key, x, y):
                 SAVE_DIALOG_TEXT += ch
                 glut.glutPostRedisplay()
             return
+
+    # ── If Point Clipping mode has an active input field, route keys to it ──
+    global POINT_CLIPPING_ACTIVE_FIELD
+    if is_point_clipping_algorithm(CURRENT_ALGORITHM) and POINT_CLIPPING_ACTIVE_FIELD is not None:
+        if key == b'\x1b':          # Escape → unfocus field
+            POINT_CLIPPING_ACTIVE_FIELD = None
+            glut.glutPostRedisplay()
+            return
+        elif key in (b'\r', b'\n'):   # Enter → advance field or clip
+            if POINT_CLIPPING_ACTIVE_FIELD == 5:
+                _confirm_clip_input_point()
+            else:
+                POINT_CLIPPING_ACTIVE_FIELD = (POINT_CLIPPING_ACTIVE_FIELD + 1) % 6
+            glut.glutPostRedisplay()
+            return
+        elif key == b'\t':           # Tab → switch to next field
+            POINT_CLIPPING_ACTIVE_FIELD = (POINT_CLIPPING_ACTIVE_FIELD + 1) % 6
+            glut.glutPostRedisplay()
+            return
+        elif key in (b'\x08', b'\x7f'):  # Backspace / Delete
+            fname = POINT_CLIPPING_FIELD_ORDER[POINT_CLIPPING_ACTIVE_FIELD]
+            if POINT_CLIPPING_ACTIVE_FIELD < 4:
+                POINT_CLIPPING_WINDOW[fname] = POINT_CLIPPING_WINDOW[fname][:-1]
+            else:
+                POINT_CLIPPING_INPUT_PT[fname] = POINT_CLIPPING_INPUT_PT[fname][:-1]
+            glut.glutPostRedisplay()
+            return
+        else:
+            ch = key.decode('ascii', errors='ignore')
+            if ch in '0123456789.-+':
+                fname = POINT_CLIPPING_FIELD_ORDER[POINT_CLIPPING_ACTIVE_FIELD]
+                if POINT_CLIPPING_ACTIVE_FIELD < 4:
+                    curr = POINT_CLIPPING_WINDOW.get(fname, "")
+                    if ch == '-' and curr.startswith('-'):
+                        POINT_CLIPPING_WINDOW[fname] = curr[1:]
+                    elif ch == '-':
+                        POINT_CLIPPING_WINDOW[fname] = '-' + curr
+                    elif len(curr) < 8:
+                        POINT_CLIPPING_WINDOW[fname] += ch
+                else:
+                    curr = POINT_CLIPPING_INPUT_PT.get(fname, "")
+                    if ch == '-' and curr.startswith('-'):
+                        POINT_CLIPPING_INPUT_PT[fname] = curr[1:]
+                    elif ch == '-':
+                        POINT_CLIPPING_INPUT_PT[fname] = '-' + curr
+                    elif len(curr) < 8:
+                        POINT_CLIPPING_INPUT_PT[fname] += ch
+                glut.glutPostRedisplay()
+                return
 
 
     # Canvas Zoom Hotkeys: '+' / '=' (Zoom In), '-' / '_' (Zoom Out), '0' (Reset)
@@ -1675,6 +1798,14 @@ def handle_canvas_click(x, y):
         glut.glutPostRedisplay()
         return
 
+    # ── Point Clipping Mode ───────────────────────────────────────────────
+    if is_point_clipping_algorithm(CURRENT_ALGORITHM):
+        test_clip_point(gx, gy)
+        POINT_CLIPPING_INPUT_PT["px"] = str(gx)
+        POINT_CLIPPING_INPUT_PT["py"] = str(gy)
+        glut.glutPostRedisplay()
+        return
+
     # ── Polygon Build Mode ────────────────────────────────────────────────
     if is_polygon_build(CURRENT_ALGORITHM):
         global polygon_build_vertices
@@ -2029,6 +2160,9 @@ def mouse(button, state, x, y):
         glut.glutPostRedisplay()
         # Also process as canvas click if it's on the canvas
         if y >= MENU_HEIGHT:
+            if is_point_clipping_algorithm(CURRENT_ALGORITHM):
+                if _handle_point_clipping_panel_click(x, y):
+                    return
             if SELECT_MODE:
                 SELECT_BOX_ACTIVE = True
                 SELECT_BOX_START = (x, y)
@@ -2045,6 +2179,9 @@ def mouse(button, state, x, y):
         else:
             _handle_ribbon_click(x, y)
     else:
+        if is_point_clipping_algorithm(CURRENT_ALGORITHM):
+            if _handle_point_clipping_panel_click(x, y):
+                return
         if SELECT_MODE:
             SELECT_BOX_ACTIVE = True
             SELECT_BOX_START = (x, y)
@@ -2074,6 +2211,9 @@ def _do_clear():
     SELECT_BOX_DRAGGED = False
     CURRENT_PIVOT = None
     CURRENT_AXIS = None
+    global POINT_CLIPPING_POINTS, POINT_CLIPPING_LAST_RESULT
+    POINT_CLIPPING_POINTS = []
+    POINT_CLIPPING_LAST_RESULT = None
     print("[Clear] All lines and selections cleared.")
     glut.glutPostRedisplay()
 
@@ -4844,6 +4984,10 @@ def draw_canvas():
     # Draw pending selected points
     draw_selected_points()
 
+    # Draw Point Clipping window and tested points
+    if is_point_clipping_algorithm(CURRENT_ALGORITHM) or POINT_CLIPPING_POINTS:
+        draw_point_clipping_canvas()
+
 
 
 # ============================================================================
@@ -4993,6 +5137,9 @@ def draw_menu():
                 r_hint = f" (r={r_val})"
             click_hint = f"Click to set radius point{r_hint}"
         status = f"  {CURRENT_ALGORITHM} | {CURRENT_COLOR} | Width:{CURRENT_LINE_WIDTH} | {click_hint}"
+    elif is_point_clipping_algorithm(CURRENT_ALGORITHM):
+        xmin, ymin, xmax, ymax = _get_clipping_bounds()
+        status = f"  Point Clipping | Window: [{int(round_half_up(xmin))}, {int(round_half_up(ymin))}] to [{int(round_half_up(xmax))}, {int(round_half_up(ymax))}] | Click canvas or enter (X, Y) to clip"
     else:
         style_display = CURRENT_LINE_STYLE
         if CURRENT_LINE_STYLE == "UserDefined":
@@ -6222,6 +6369,363 @@ def draw_selection_box():
     gl.glDisable(gl.GL_BLEND)
 
 
+# ============================================================================
+# Point Clipping Canvas & UI Panel System
+# ============================================================================
+
+def draw_point_clipping_canvas():
+    """
+    Render the 2D rectangular clipping window on the canvas with
+    subtle interior tint, bold boundary borders, corner coordinate labels,
+    and all tested points color-coded in green (accepted) or red (rejected).
+    """
+    xmin, ymin, xmax, ymax = _get_clipping_bounds()
+
+    # 1. Semi-transparent interior tint (radiant electric cyan)
+    gl.glEnable(gl.GL_BLEND)
+    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+    gl.glColor4f(0.0, 0.82, 1.0, 0.08)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(xmin * GRID_SIZE, ymin * GRID_SIZE)
+    gl.glVertex2f(xmax * GRID_SIZE, ymin * GRID_SIZE)
+    gl.glVertex2f(xmax * GRID_SIZE, ymax * GRID_SIZE)
+    gl.glVertex2f(xmin * GRID_SIZE, ymax * GRID_SIZE)
+    gl.glEnd()
+
+    # 2. Outer clipping perimeter border
+    gl.glColor3f(0.0, 0.68, 0.95)
+    gl.glLineWidth(2.0)
+    gl.glBegin(gl.GL_LINE_LOOP)
+    gl.glVertex2f(xmin * GRID_SIZE, ymin * GRID_SIZE)
+    gl.glVertex2f(xmax * GRID_SIZE, ymin * GRID_SIZE)
+    gl.glVertex2f(xmax * GRID_SIZE, ymax * GRID_SIZE)
+    gl.glVertex2f(xmin * GRID_SIZE, ymax * GRID_SIZE)
+    gl.glEnd()
+
+    # 3. Corner coordinate labels
+    inv_scale = 1.0 / CANVAS_SCALE
+    _draw_canvas_label(xmin * GRID_SIZE, ymin * GRID_SIZE - 14.0 * inv_scale, f"({int(round_half_up(xmin))},{int(round_half_up(ymin))})", text_color=(0.12, 0.22, 0.38))
+    _draw_canvas_label(xmax * GRID_SIZE, ymin * GRID_SIZE - 14.0 * inv_scale, f"({int(round_half_up(xmax))},{int(round_half_up(ymin))})", text_color=(0.12, 0.22, 0.38))
+    _draw_canvas_label(xmax * GRID_SIZE, ymax * GRID_SIZE + 14.0 * inv_scale, f"({int(round_half_up(xmax))},{int(round_half_up(ymax))})", text_color=(0.12, 0.22, 0.38))
+    _draw_canvas_label(xmin * GRID_SIZE, ymax * GRID_SIZE + 14.0 * inv_scale, f"({int(round_half_up(xmin))},{int(round_half_up(ymax))})", text_color=(0.12, 0.22, 0.38))
+
+    # 4. Plotted points
+    for pt in POINT_CLIPPING_POINTS:
+        px = pt["x"]
+        py = pt["y"]
+        acc = pt["accepted"]
+        col = (0.12, 0.75, 0.25) if acc else (0.85, 0.15, 0.15)
+        gl.glColor3f(*col)
+        _draw_circle_filled_point(px * GRID_SIZE, py * GRID_SIZE, radius=4.5)
+        tag = f"({int(round_half_up(px))},{int(round_half_up(py))}) {'[OK]' if acc else '[OUT]'}"
+        tag_col = (0.08, 0.52, 0.18) if acc else (0.78, 0.12, 0.12)
+        _draw_canvas_label(px * GRID_SIZE + 12.0 * inv_scale, py * GRID_SIZE + 10.0 * inv_scale, tag, text_color=tag_col)
+
+
+def draw_point_clipping_panel():
+    """
+    Render the dedicated Point Clipping Input Section panel
+    allowing user to specify the 4 clipping window coordinates,
+    enter custom point coordinates, and view live clipping results.
+    """
+    global POINT_CLIPPING_CURSOR_BLINK
+
+    if not is_point_clipping_algorithm(CURRENT_ALGORITHM):
+        return
+
+    POINT_CLIPPING_CURSOR_BLINK = (POINT_CLIPPING_CURSOR_BLINK + 1) % 60
+
+    panel_w = 340
+    panel_h = 280
+    panel_x = 16
+    panel_y = MENU_HEIGHT + 14
+
+    # 1. Subtle drop shadow
+    gl.glEnable(gl.GL_BLEND)
+    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+    gl.glColor4f(0.0, 0.0, 0.0, 0.25)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(panel_x + 5, panel_y + 5)
+    gl.glVertex2f(panel_x + panel_w + 5, panel_y + 5)
+    gl.glVertex2f(panel_x + panel_w + 5, panel_y + panel_h + 5)
+    gl.glVertex2f(panel_x + 5, panel_y + panel_h + 5)
+    gl.glEnd()
+
+    # 2. Main panel background (sleek dark studio glass)
+    gl.glColor4f(0.11, 0.12, 0.16, 0.96)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(panel_x, panel_y)
+    gl.glVertex2f(panel_x + panel_w, panel_y)
+    gl.glVertex2f(panel_x + panel_w, panel_y + panel_h)
+    gl.glVertex2f(panel_x, panel_y + panel_h)
+    gl.glEnd()
+
+    # 3. Radiant cyan border
+    gl.glColor3f(0.0, 0.82, 1.0)
+    gl.glLineWidth(1.5)
+    gl.glBegin(gl.GL_LINE_LOOP)
+    gl.glVertex2f(panel_x, panel_y)
+    gl.glVertex2f(panel_x + panel_w, panel_y)
+    gl.glVertex2f(panel_x + panel_w, panel_y + panel_h)
+    gl.glVertex2f(panel_x, panel_y + panel_h)
+    gl.glEnd()
+
+    # 4. Header Bar
+    header_h = 32
+    gl.glColor3f(0.16, 0.18, 0.25)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(panel_x, panel_y)
+    gl.glVertex2f(panel_x + panel_w, panel_y)
+    gl.glVertex2f(panel_x + panel_w, panel_y + header_h)
+    gl.glVertex2f(panel_x, panel_y + header_h)
+    gl.glEnd()
+
+    draw_menu_text(panel_x + 12, panel_y + 20, "2D Point Clipping Input Section", (0.0, 0.88, 1.0))
+
+    # 5. Section: Window Coordinates (4 values)
+    lbl_y1 = panel_y + 48
+    draw_menu_text(panel_x + 12, lbl_y1, "Clipping Window Coordinates:", (0.85, 0.88, 0.95))
+
+    # Helper to draw a single text field
+    def _draw_field_box(field_name, field_idx, bx, by, bw, bh, label):
+        draw_menu_text(bx - 36, by + 16, f"{label}:", (0.75, 0.78, 0.85))
+        is_active = (POINT_CLIPPING_ACTIVE_FIELD == field_idx)
+        # Background
+        gl.glColor3f(0.07, 0.08, 0.11)
+        gl.glBegin(gl.GL_QUADS)
+        gl.glVertex2f(bx, by)
+        gl.glVertex2f(bx + bw, by)
+        gl.glVertex2f(bx + bw, by + bh)
+        gl.glVertex2f(bx, by + bh)
+        gl.glEnd()
+        # Border
+        if is_active:
+            gl.glColor3f(0.0, 0.82, 1.0)
+            gl.glLineWidth(1.5)
+        else:
+            gl.glColor3f(0.28, 0.32, 0.42)
+            gl.glLineWidth(1.0)
+        gl.glBegin(gl.GL_LINE_LOOP)
+        gl.glVertex2f(bx, by)
+        gl.glVertex2f(bx + bw, by)
+        gl.glVertex2f(bx + bw, by + bh)
+        gl.glVertex2f(bx, by + bh)
+        gl.glEnd()
+
+        # Text value
+        val = POINT_CLIPPING_WINDOW.get(field_name, "") if field_idx < 4 else POINT_CLIPPING_INPUT_PT.get(field_name, "")
+        cursor_str = "|" if (is_active and POINT_CLIPPING_CURSOR_BLINK < 30) else ""
+        text_disp = val + cursor_str
+        draw_menu_text(bx + 8, by + 16, text_disp, (0.95, 0.95, 0.98))
+
+    # Row 1: Xmin & Ymin
+    r1_y = panel_y + 60
+    _draw_field_box("xmin", 0, panel_x + 50, r1_y, 90, 24, "Xmin")
+    _draw_field_box("ymin", 1, panel_x + 200, r1_y, 90, 24, "Ymin")
+
+    # Row 2: Xmax & Ymax
+    r2_y = panel_y + 92
+    _draw_field_box("xmax", 2, panel_x + 50, r2_y, 90, 24, "Xmax")
+    _draw_field_box("ymax", 3, panel_x + 200, r2_y, 90, 24, "Ymax")
+
+    # Separator
+    gl.glColor3f(0.22, 0.25, 0.35)
+    gl.glLineWidth(1.0)
+    gl.glBegin(gl.GL_LINES)
+    gl.glVertex2f(panel_x + 12, panel_y + 126)
+    gl.glVertex2f(panel_x + panel_w - 12, panel_y + 126)
+    gl.glEnd()
+
+    # Section 2: Input Point to Clip
+    lbl_y2 = panel_y + 142
+    draw_menu_text(panel_x + 12, lbl_y2, "Input Point to Clip:", (0.85, 0.88, 0.95))
+
+    r3_y = panel_y + 154
+    _draw_field_box("px", 4, panel_x + 35, r3_y, 65, 24, "X")
+    _draw_field_box("py", 5, panel_x + 135, r3_y, 65, 24, "Y")
+
+    # [Clip Point] Button
+    btn_x = panel_x + 225
+    btn_y = r3_y
+    btn_w = 95
+    btn_h = 24
+    gl.glColor3f(0.12, 0.38, 0.58)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(btn_x, btn_y)
+    gl.glVertex2f(btn_x + btn_w, btn_y)
+    gl.glVertex2f(btn_x + btn_w, btn_y + btn_h)
+    gl.glVertex2f(btn_x, btn_y + btn_h)
+    gl.glEnd()
+    gl.glColor3f(0.0, 0.82, 1.0)
+    gl.glLineWidth(1.0)
+    gl.glBegin(gl.GL_LINE_LOOP)
+    gl.glVertex2f(btn_x, btn_y)
+    gl.glVertex2f(btn_x + btn_w, btn_y)
+    gl.glVertex2f(btn_x + btn_w, btn_y + btn_h)
+    gl.glVertex2f(btn_x, btn_y + btn_h)
+    gl.glEnd()
+    draw_menu_text(btn_x + 14, btn_y + 16, "Clip Point", (0.95, 0.98, 1.0))
+
+    # Section 3: Live Result & Guide
+    hint_y = panel_y + 192
+    draw_menu_text(panel_x + 12, hint_y, "* Click canvas or enter (X, Y) to test point", (0.55, 0.65, 0.78))
+
+    res_box_y = panel_y + 204
+    res_box_h = 28
+    res_box_w = panel_w - 24
+    if POINT_CLIPPING_LAST_RESULT is not None:
+        l_px, l_py, l_acc = POINT_CLIPPING_LAST_RESULT
+        if l_acc:
+            bg_col = (0.08, 0.28, 0.14)
+            bdr_col = (0.15, 0.85, 0.35)
+            txt_col = (0.25, 0.95, 0.45)
+            res_txt = f"ACCEPTED: Point ({int(round_half_up(l_px))}, {int(round_half_up(l_py))}) lies INSIDE"
+        else:
+            bg_col = (0.32, 0.10, 0.10)
+            bdr_col = (0.90, 0.25, 0.25)
+            txt_col = (1.0, 0.45, 0.45)
+            res_txt = f"REJECTED: Point ({int(round_half_up(l_px))}, {int(round_half_up(l_py))}) lies OUTSIDE"
+    else:
+        bg_col = (0.10, 0.11, 0.15)
+        bdr_col = (0.25, 0.28, 0.38)
+        txt_col = (0.60, 0.65, 0.75)
+        res_txt = "Ready -- Click canvas or enter point coordinates"
+
+    gl.glColor3f(*bg_col)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(panel_x + 12, res_box_y)
+    gl.glVertex2f(panel_x + 12 + res_box_w, res_box_y)
+    gl.glVertex2f(panel_x + 12 + res_box_w, res_box_y + res_box_h)
+    gl.glVertex2f(panel_x + 12, res_box_y + res_box_h)
+    gl.glEnd()
+    gl.glColor3f(*bdr_col)
+    gl.glLineWidth(1.0)
+    gl.glBegin(gl.GL_LINE_LOOP)
+    gl.glVertex2f(panel_x + 12, res_box_y)
+    gl.glVertex2f(panel_x + 12 + res_box_w, res_box_y)
+    gl.glVertex2f(panel_x + 12 + res_box_w, res_box_y + res_box_h)
+    gl.glVertex2f(panel_x + 12, res_box_y + res_box_h)
+    gl.glEnd()
+    draw_menu_text(panel_x + 20, res_box_y + 19, res_txt, txt_col)
+
+    # Section 4: Action Buttons
+    r4_y = panel_y + 242
+    b1_x = panel_x + 12
+    b1_w = 145
+    b1_h = 24
+    gl.glColor3f(0.18, 0.20, 0.26)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(b1_x, r4_y)
+    gl.glVertex2f(b1_x + b1_w, r4_y)
+    gl.glVertex2f(b1_x + b1_w, r4_y + b1_h)
+    gl.glVertex2f(b1_x, r4_y + b1_h)
+    gl.glEnd()
+    gl.glColor3f(0.35, 0.40, 0.50)
+    gl.glLineWidth(1.0)
+    gl.glBegin(gl.GL_LINE_LOOP)
+    gl.glVertex2f(b1_x, r4_y)
+    gl.glVertex2f(b1_x + b1_w, r4_y)
+    gl.glVertex2f(b1_x + b1_w, r4_y + b1_h)
+    gl.glVertex2f(b1_x, r4_y + b1_h)
+    gl.glEnd()
+    draw_menu_text(b1_x + 26, r4_y + 16, "Clear Points", (0.85, 0.88, 0.95))
+
+    b2_x = panel_x + 175
+    b2_w = 145
+    b2_h = 24
+    gl.glColor3f(0.18, 0.20, 0.26)
+    gl.glBegin(gl.GL_QUADS)
+    gl.glVertex2f(b2_x, r4_y)
+    gl.glVertex2f(b2_x + b2_w, r4_y)
+    gl.glVertex2f(b2_x + b2_w, r4_y + b2_h)
+    gl.glVertex2f(b2_x, r4_y + b2_h)
+    gl.glEnd()
+    gl.glColor3f(0.35, 0.40, 0.50)
+    gl.glLineWidth(1.0)
+    gl.glBegin(gl.GL_LINE_LOOP)
+    gl.glVertex2f(b2_x, r4_y)
+    gl.glVertex2f(b2_x + b2_w, r4_y)
+    gl.glVertex2f(b2_x + b2_w, r4_y + b2_h)
+    gl.glVertex2f(b2_x, r4_y + b2_h)
+    gl.glEnd()
+    draw_menu_text(b2_x + 24, r4_y + 16, "Reset Window", (0.85, 0.88, 0.95))
+
+
+def _handle_point_clipping_panel_click(x, y):
+    """Handle mouse clicks within the Point Clipping Input Section panel."""
+    global POINT_CLIPPING_ACTIVE_FIELD, POINT_CLIPPING_WINDOW, POINT_CLIPPING_INPUT_PT
+    global POINT_CLIPPING_POINTS, POINT_CLIPPING_LAST_RESULT
+
+    panel_x = 16
+    panel_y = MENU_HEIGHT + 14
+    panel_w = 340
+    panel_h = 280
+
+    if not (panel_x <= x <= panel_x + panel_w and panel_y <= y <= panel_y + panel_h):
+        return False
+
+    # Check Xmin field: panel_x + 50, panel_y + 60, bw 90, bh 24
+    if (panel_x + 50 <= x <= panel_x + 140) and (panel_y + 60 <= y <= panel_y + 84):
+        POINT_CLIPPING_ACTIVE_FIELD = 0
+        glut.glutPostRedisplay()
+        return True
+
+    # Check Ymin field: panel_x + 200, panel_y + 60, bw 90, bh 24
+    if (panel_x + 200 <= x <= panel_x + 290) and (panel_y + 60 <= y <= panel_y + 84):
+        POINT_CLIPPING_ACTIVE_FIELD = 1
+        glut.glutPostRedisplay()
+        return True
+
+    # Check Xmax field: panel_x + 50, panel_y + 92, bw 90, bh 24
+    if (panel_x + 50 <= x <= panel_x + 140) and (panel_y + 92 <= y <= panel_y + 116):
+        POINT_CLIPPING_ACTIVE_FIELD = 2
+        glut.glutPostRedisplay()
+        return True
+
+    # Check Ymax field: panel_x + 200, panel_y + 92, bw 90, bh 24
+    if (panel_x + 200 <= x <= panel_x + 290) and (panel_y + 92 <= y <= panel_y + 116):
+        POINT_CLIPPING_ACTIVE_FIELD = 3
+        glut.glutPostRedisplay()
+        return True
+
+    # Check px field: panel_x + 35, panel_y + 154, bw 65, bh 24
+    if (panel_x + 35 <= x <= panel_x + 100) and (panel_y + 154 <= y <= panel_y + 178):
+        POINT_CLIPPING_ACTIVE_FIELD = 4
+        glut.glutPostRedisplay()
+        return True
+
+    # Check py field: panel_x + 135, panel_y + 154, bw 65, bh 24
+    if (panel_x + 135 <= x <= panel_x + 200) and (panel_y + 154 <= y <= panel_y + 178):
+        POINT_CLIPPING_ACTIVE_FIELD = 5
+        glut.glutPostRedisplay()
+        return True
+
+    # Check [Clip Point] Button: panel_x + 225, panel_y + 154, bw 95, bh 24
+    if (panel_x + 225 <= x <= panel_x + 320) and (panel_y + 154 <= y <= panel_y + 178):
+        _confirm_clip_input_point()
+        return True
+
+    # Check [Clear Points] Button: panel_x + 12, panel_y + 242, bw 145, bh 24
+    if (panel_x + 12 <= x <= panel_x + 157) and (panel_y + 242 <= y <= panel_y + 266):
+        POINT_CLIPPING_POINTS.clear()
+        POINT_CLIPPING_LAST_RESULT = None
+        print("[Point Clipping] Cleared all tested points.")
+        glut.glutPostRedisplay()
+        return True
+
+    # Check [Reset Window] Button: panel_x + 175, panel_y + 242, bw 145, bh 24
+    if (panel_x + 175 <= x <= panel_x + 320) and (panel_y + 242 <= y <= panel_y + 266):
+        POINT_CLIPPING_WINDOW["xmin"] = "-80"
+        POINT_CLIPPING_WINDOW["ymin"] = "-60"
+        POINT_CLIPPING_WINDOW["xmax"] = "80"
+        POINT_CLIPPING_WINDOW["ymax"] = "60"
+        print("[Point Clipping] Window reset to [-80, -60] to [80, 60].")
+        glut.glutPostRedisplay()
+        return True
+
+    return True
+
+
 def display():
     """
     Render the complete application window.
@@ -6261,6 +6765,7 @@ def display():
     draw_save_dialog()
     draw_pattern_dialog()
     draw_transform_dialog()
+    draw_point_clipping_panel()
 
     # ------------------------------------------------------------------------
     # Present Frame

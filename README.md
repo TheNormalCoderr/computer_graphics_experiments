@@ -20,6 +20,7 @@ This repository contains practical laboratory implementations and interactive vi
 | 8 | **Boundary Fill Algorithm** | [`BoundaryFill/`](BoundaryFill/) | 4-Way & 8-Way boundary fill on 4-connected and 8-connected boundaries (leak analysis) |
 | 9 | **Flood Fill Algorithm** | [`FloodFill/`](FloodFill/) | 4-Way & 8-Way fill: multi-colored boundary containment, diagonal bottleneck bridging, and boundary leakage |
 | 10 | **Scan-Line Polygon Fill Algorithm** | [`ScanLineFill/`](ScanLineFill/) | Edge Table & Active Edge Table: scanline coherence, parity multi-span, vertex coincidence, and seedless hole preservation |
+| 11 | **Point Clipping Algorithm** | [`PointClipping/`](PointClipping/) | 2D rectangular window clipping: interior, exterior, mixed distribution, and boundary/corner inequality evaluation |
 
 ---
 
@@ -108,4 +109,13 @@ python ScanLineFill/src/scan_line_fill.py --headless
 
 # Generate laboratory Word report (.docx)
 python ScanLineFill/docs/generate_report.py
+```
+
+### Experiment 11: Point Clipping Algorithm
+```bash
+# Interactive visualizer
+python PointClipping/src/point_clipping.py
+
+# Generate laboratory Word report (.docx)
+python PointClipping/docs/generate_report.py
 ```

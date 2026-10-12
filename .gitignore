@@ -10,3 +10,4 @@ venv/
 *.log
 docs
 general-experiment-report-template.md
+graphify-out

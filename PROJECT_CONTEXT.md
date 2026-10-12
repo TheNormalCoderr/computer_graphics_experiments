@@ -47,10 +47,14 @@ CG_labwork_5th_sem/
 │   ├── src/flood_fill.py             # Standalone runner / headless test case generator
 │   ├── docs/generate_report.py       # Comprehensive Word (.docx) report generator
 │   └── outputs/                      # Headless test case screenshots (TC1-TC4)
-└── ScanLineFill/                     # Experiment 10: Scan-Line Polygon Fill
-    ├── src/scan_line_fill.py         # Standalone runner / headless test case generator
-    ├── docs/generate_report.py       # Comprehensive Word (.docx) report generator
-    └── outputs/                      # Headless test case screenshots (TC1-TC4)
+├── ScanLineFill/                     # Experiment 10: Scan-Line Polygon Fill
+│   ├── src/scan_line_fill.py         # Standalone runner / headless test case generator
+│   ├── docs/generate_report.py       # Comprehensive Word (.docx) report generator
+│   └── outputs/                      # Headless test case screenshots (TC1-TC4)
+└── PointClipping/                    # Experiment 11: 2D Point Clipping
+    ├── src/point_clipping.py         # Standalone interactive OpenGL runner
+    ├── docs/generate_report.py       # Word (.docx) laboratory report generator
+    └── outputs/                      # Test case screenshots (TC1-TC4)
 ```
 
 ---
@@ -355,3 +359,24 @@ When `SELECTED_SHAPE_INDICES` is non-empty, transformations apply strictly to se
   python ScanLineFill/src/scan_line_fill.py --headless # Generate actual app window screenshots
   python ScanLineFill/docs/generate_report.py         # Generate Word laboratory report (.docx)
   ```
+
+---
+
+## 11. Experiment 11: Point Clipping (`PointClipping/`)
+
+- **Source Code**: [`PointClipping/src/point_clipping.py`](PointClipping/src/point_clipping.py)
+- **Report Generator**: [`PointClipping/docs/generate_report.py`](PointClipping/docs/generate_report.py)
+- **Output Report**: [`PointClipping/docs/PointClipping_Experiment_Report.docx`](PointClipping/docs/PointClipping_Experiment_Report.docx)
+- **Test Cases & Evaluation Matrix**:
+  | Test Case | Point Distribution | Total Points | Accepted | Rejected | Rationale |
+  |---|---|---|---|---|---|
+  | **TC1** | Strictly Interior Points | 4 | 4 (Green) | 0 | All points satisfy $100 \le x \le 400$ and $100 \le y \le 300$. |
+  | **TC2** | Strictly Exterior Points | 5 | 0 | 5 (Red) | Each point violates at least one of the four bounding inequalities. |
+  | **TC3** | Mixed Interior / Exterior | 5 | 2 (Green) | 3 (Red) | Selective acceptance: 2 inside window and 3 outside in different exterior zones. |
+  | **TC4** | Boundary, Corners & Adjacent | 8 | 6 (Green) | 2 (Red) | Inclusive boundaries ($\le$) retain edge and corner points; 1-px offsets are rejected. |
+- **Execution**:
+  ```bash
+  python PointClipping/src/point_clipping.py          # Interactive OpenGL runner (keys 1-4, mouse click)
+  python PointClipping/docs/generate_report.py        # Generate Word laboratory report (.docx)
+  ```
+

@@ -3,6 +3,7 @@ import sys
 import OpenGL.GL as gl
 import OpenGL.GLUT as glut
 import math
+
 # ======================== Canvas configuration ========================
 CANVAS_WIDTH = 1200
 CANVAS_HEIGHT = 800
@@ -20,6 +21,7 @@ def keyboard(key, x, y):
         CONTROL_POINTS.clear()
         print("Display is now cleared")
         glut.glutPostRedisplay()
+
 # ======================== Mouse clicks ========================
 CONTROL_POINTS = []
 selected_point = None
@@ -53,6 +55,7 @@ def motion(x, y):
         canvas_y = CENTER_Y - y
         CONTROL_POINTS[selected_point] = (canvas_x, canvas_y)
         glut.glutPostRedisplay()
+
 # ======================== Initialize OpenGL window ========================
 def initWindow():
     gl.glMatrixMode(gl.GL_PROJECTION)
@@ -82,7 +85,6 @@ def display():
     drawControlPoints()
     drawCurve()
     gl.glFlush()
-
 
 # ======================== Bezier Curve Functions ========================
 def drawControlPoints():
@@ -125,6 +127,7 @@ def drawCurve():
     for pt in curvePoints:
         gl.glVertex2f(*pt)
     gl.glEnd()
+
 # ======================== Main function ========================
 def main():
     glut.glutInit(sys.argv)

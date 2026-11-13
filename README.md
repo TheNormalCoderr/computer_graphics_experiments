@@ -2,8 +2,6 @@
 
 This repository contains practical laboratory implementations and interactive visualizers for fundamental Computer Graphics algorithms in Python using PyOpenGL, GLUT/FreeGLUT, and custom rasterization routines.
 
-> For a full architecture and codebase reference, see [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md).
-
 ---
 
 ## Laboratory Experiments
@@ -20,7 +18,11 @@ This repository contains practical laboratory implementations and interactive vi
 | 8 | **Boundary Fill Algorithm** | [`BoundaryFill/`](BoundaryFill/) | 4-Way & 8-Way boundary fill on 4-connected and 8-connected boundaries (leak analysis) |
 | 9 | **Flood Fill Algorithm** | [`FloodFill/`](FloodFill/) | 4-Way & 8-Way fill: multi-colored boundary containment, diagonal bottleneck bridging, and boundary leakage |
 | 10 | **Scan-Line Polygon Fill Algorithm** | [`ScanLineFill/`](ScanLineFill/) | Edge Table & Active Edge Table: scanline coherence, parity multi-span, vertex coincidence, and seedless hole preservation |
-| 11 | **Point Clipping Algorithm** | [`PointClipping/`](PointClipping/) | 2D rectangular window clipping: interior, exterior, mixed distribution, and boundary/corner inequality evaluation |
+| 11 | **Point Clipping Algorithm** | [`PointClipping/`](PointClipping/) / [`PointClipping2/`](PointClipping2/) | 2D rectangular window clipping: interior, exterior, mixed distribution, and boundary/corner inequality evaluation |
+| 12 | **Liang-Barsky Line Clipping** | [`LiangBarsky(Line clipping)/`](LiangBarsky(Line%20clipping)/) | Parametric line clipping using inequalities and t-interval intersection |
+| 13 | **Weiler-Atherton Polygon Clipping** | [`Weiler_Atherton(Polygon Clipping)/`](Weiler_Atherton(Polygon%20Clipping)/) | Dual clockwise vertex-list traversal for convex and concave polygons (including disjoint splits) |
+| 14 | **Bezier Curve Generation** | [`Bezier_Curve/`](Bezier_Curve/) | Interactive parametric Bezier curves of arbitrary degree using Bernstein basis polynomials |
+| 15 | **B-Spline Curve Generation** | [`B-Spline/`](B-Spline/) | Clamped open-uniform quadratic B-Spline curves using recursive Cox-de Boor basis functions |
 
 ---
 
@@ -118,4 +120,52 @@ python PointClipping/src/point_clipping.py
 
 # Generate laboratory Word report (.docx)
 python PointClipping/docs/generate_report.py
+```
+
+### Experiment 12: Liang-Barsky Line Clipping
+```bash
+# Interactive visualizer / test cases
+python "LiangBarsky(Line clipping)/src/test_cases.py"
+
+# Headless generation of test case screenshots
+python "LiangBarsky(Line clipping)/src/test_cases.py" --headless
+
+# Generate laboratory Word report (.docx)
+python "LiangBarsky(Line clipping)/docs/generate_report.py"
+```
+
+### Experiment 13: Weiler-Atherton Polygon Clipping
+```bash
+# Interactive visualizer / test cases
+python "Weiler_Atherton(Polygon Clipping)/src/test_cases.py"
+
+# Headless generation of test case screenshots
+python "Weiler_Atherton(Polygon Clipping)/src/test_cases.py" --headless
+
+# Generate laboratory Word report (.docx)
+python "Weiler_Atherton(Polygon Clipping)/docs/generate_report.py"
+```
+
+### Experiment 14: Bezier Curve Generation
+```bash
+# Interactive visualizer (click to add, drag to move, 'c' to clear)
+python Bezier_Curve/src/BezierCurve.py
+
+# Test case runner / headless screenshot capture
+python Bezier_Curve/src/test_cases.py --headless
+
+# Generate laboratory Word report (.docx)
+python Bezier_Curve/docs/generate_report.py
+```
+
+### Experiment 15: B-Spline Curve Generation
+```bash
+# Interactive visualizer (click to add, drag to move, 'c' to clear)
+python B-Spline/src/BSpline.py
+
+# Test case runner / headless screenshot capture
+python B-Spline/src/test_cases.py --headless
+
+# Generate laboratory Word report (.docx)
+python B-Spline/docs/generate_report.py
 ```

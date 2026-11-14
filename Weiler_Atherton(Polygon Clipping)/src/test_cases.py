@@ -25,39 +25,30 @@ if SCRIPT_DIR not in sys.path:
 
 import WeilerAtherton as wa  # type: ignore
 
-# Clipping window corners: (-300, -200) to (300, 200)
-WINDOW_CORNERS = [(-300, -200), (300, 200)]
+RECT_WINDOW = [(-300, -200), (300, -200), (300, 200), (-300, 200)]
+PENTAGON_WINDOW = [(-250, -180), (250, -180), (320, 80), (0, 260), (-320, 80)]
+OFFSET_RECT_WINDOW = [(-250, -150), (100, -150), (100, 150), (-250, 150)]
 
 TEST_CASES = {
     1: {
-        "label": "TC1 — Convex Polygon Overlapping Single Boundary",
-        "file": "tc1_convex_single_edge.png",
-        "window": WINDOW_CORNERS,
+        "label": "TC1 — CLIP: Concave Polygon Splitting into Two Disjoint Polygons",
+        "file": "tc1_clip_concave_disjoint_split.png",
+        "operation": "CLIP",
+        "window": RECT_WINDOW,
         "vertices": [
-            (-420, -90),
-            (-420, 90),
-            (-120, 150),
-            (160, 0),
-            (-120, -150),
+            (-260, 300),
+            (260, 300),
+            (180, -100),
+            (30, 260),
+            (-30, 260),
+            (-180, -100),
         ],
     },
     2: {
-        "label": "TC2 — Convex Polygon Overlapping All Four Boundaries",
-        "file": "tc2_convex_all_boundaries.png",
-        "window": WINDOW_CORNERS,
-        "vertices": [
-            (-400, 0),
-            (-150, 250),
-            (150, 250),
-            (400, 0),
-            (150, -250),
-            (-150, -250),
-        ],
-    },
-    3: {
-        "label": "TC3 — Concave Polygon with Interior Cavity Preserved",
-        "file": "tc3_concave_cavity.png",
-        "window": WINDOW_CORNERS,
+        "label": "TC2 — CLIP: Concave Chevron Against Pentagonal Clipping Window",
+        "file": "tc2_clip_pentagon_concave.png",
+        "operation": "CLIP",
+        "window": PENTAGON_WINDOW,
         "vertices": [
             (-240, 120),
             (0, 40),
@@ -69,17 +60,33 @@ TEST_CASES = {
             (-280, -280),
         ],
     },
-    4: {
-        "label": "TC4 — Concave Polygon Splitting into Two Disjoint Polygons",
-        "file": "tc4_concave_disjoint_split.png",
-        "window": WINDOW_CORNERS,
+    3: {
+        "label": "TC3 — UNION: Overlapping Polygons with Mixed Winding Order",
+        "file": "tc3_union_mixed_winding.png",
+        "operation": "UNION",
+        "window": OFFSET_RECT_WINDOW,
         "vertices": [
-            (-260, 300),
-            (260, 300),
-            (180, -100),
-            (30, 260),
-            (-30, 260),
-            (-180, -100),
+            (-50, -220),
+            (-50, 80),
+            (280, 80),
+            (280, -220),
+        ],
+    },
+    4: {
+        "label": "TC4 — DIFFERENCE: Clipping Polygon Inside Subject Polygon (Hole)",
+        "file": "tc4_difference_hole.png",
+        "operation": "DIFFERENCE",
+        "window": [
+            (-120, -100),
+            (120, -100),
+            (120, 100),
+            (-120, 100),
+        ],
+        "vertices": [
+            (-280, -220),
+            (280, -220),
+            (280, 220),
+            (-280, 220),
         ],
     },
 }
@@ -129,20 +136,17 @@ def load_test_case(case_num):
     global current_case
     current_case = case_num
     tc = TEST_CASES[case_num]
-    wa.CLIPPING_WINODW_POINTS.clear()
-    wa.CLIPPING_WINODW_POINTS.extend(tc["window"])
-    wa.POLYGON_VERTICES.clear()
-    wa.POLYGON_VERTICES.extend(tc["vertices"])
+    wa.CLIPPING_WINDOW_POINTS.clear()
+    wa.CLIPPING_WINDOW_POINTS.extend(tc["window"])
+    wa.POLYGON_POINTS.clear()
+    wa.POLYGON_POINTS.extend(tc["vertices"])
+    wa.CURRENT_OPERATION = tc["operation"]
+    wa.PHASE = "DONE"
 
-    wa.x_min = min(tc["window"][0][0], tc["window"][1][0])
-    wa.x_max = max(tc["window"][0][0], tc["window"][1][0])
-    wa.y_min = min(tc["window"][0][1], tc["window"][1][1])
-    wa.y_max = max(tc["window"][0][1], tc["window"][1][1])
-
-    clipped = wa.processPoints()
     print(f"\n--- {tc['label']} ---")
-    print(f"Input vertices ({len(tc['vertices'])}): {tc['vertices']}")
-    print(f"Clipped output polygons ({len(clipped)}): {clipped}")
+    print(f"Operation: {tc['operation']}")
+    print(f"Clipping window ({len(tc['window'])}): {tc['window']}")
+    print(f"Subject vertices ({len(tc['vertices'])}): {tc['vertices']}")
 
 
 def capture_all_step(step=1, exit_on_done=False):

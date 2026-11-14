@@ -120,9 +120,9 @@ def drawButtons():
         for char in name:
             glut.glutBitmapCharacter(glut.GLUT_BITMAP_HELVETICA_18, ord(char)) # type:ignore
 
-def drawPolygon(points, mode, color):
-    """draw the Subject polygon"""
-    # to accurately fill concave polygons 
+def drawPolygon(points, mode, color, holes=None):
+    """draw the Subject polygon (with optional inner hole contours)"""
+    # to accurately fill concave polygons and polygons with holes
     if mode == gl.GL_POLYGON:
         tess = glu.gluNewTess()
         glu.gluTessCallback(tess, glu.GLU_TESS_BEGIN, gl.glBegin)
@@ -130,12 +130,19 @@ def drawPolygon(points, mode, color):
         glu.gluTessCallback(tess, glu.GLU_TESS_END, gl.glEnd)
         gl.glColor4f(*color)
         glu.gluTessBeginPolygon(tess, None)
+
         glu.gluTessBeginContour(tess)
-    
         for x, y in points:
             glu.gluTessVertex(tess, (x, y, 0), (x, y, 0))
-    
         glu.gluTessEndContour(tess)
+
+        if holes:
+            for hole in holes:
+                glu.gluTessBeginContour(tess)
+                for x, y in hole:
+                    glu.gluTessVertex(tess, (x, y, 0), (x, y, 0))
+                glu.gluTessEndContour(tess)
+
         glu.gluTessEndPolygon(tess)
         glu.gluDeleteTess(tess)
     else:
@@ -144,6 +151,12 @@ def drawPolygon(points, mode, color):
         for pt in points:
             gl.glVertex2f(*pt)
         gl.glEnd()
+        if holes:
+            for hole in holes:
+                gl.glBegin(mode)
+                for pt in hole:
+                    gl.glVertex2f(*pt)
+                gl.glEnd()
 
 # Display function 
 def display():
@@ -301,7 +314,7 @@ def findPointIndex(pointList, point):
 
 def isEnteringPoint(before, after, point=None, clipPoly=None):
     """Determine whether an intersection is entering (outside -> inside).
-    Returns True for entering, False for exiting, or None if grazing (no crossing).
+    Returns True for entering, False for exiting.
     """
     if clipPoly is None:
         clipPoly = CLIPPING_WINDOW_POINTS
@@ -380,7 +393,7 @@ def weilerAtherton():
     clippingWindowList = getClippingWindowList(allIntersections, clipPoly)
     subjectPolygonList = getPolygonList(allIntersections, subjPoly)
 
-    # classify intersections as entering and exiting (ignore grazing touches)
+    # classify intersections as entering and exiting.
     intersections = []
     seen_points = []
     for item in allIntersections:
@@ -429,10 +442,15 @@ def weilerAtherton():
                 polygons = [subjPoly, clipPoly]
 
         elif CURRENT_OPERATION == "DIFFERENCE":
-            polygons = (
-                [] if subject_inside
-                else [subjPoly]
-            )
+            if subject_inside:
+                polygons = []
+            elif clip_inside:
+                holes = [list(reversed(clipPoly))]
+                drawPolygon(subjPoly, gl.GL_POLYGON, (0.0, 1.0, 0.0, 0.4), holes=holes)
+                drawPolygon(subjPoly, gl.GL_LINE_LOOP, (1.0, 0.6471, 0, 1.0), holes=holes)
+                return
+            else:
+                polygons = [subjPoly]
     else:
         if CURRENT_OPERATION == "CLIP":
             polygons = getClippedPolygonPoints(clippingWindowList, subjectPolygonList, intersections)
